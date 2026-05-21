@@ -1,0 +1,5 @@
+data/
+runtime/
+.DS_Store
+node_modules/
+*.tgz

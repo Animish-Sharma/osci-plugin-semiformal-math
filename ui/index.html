@@ -1,0 +1,1473 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Witsoc — semiformal math</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/_plugin-runtime/theme.css">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex;
+      background: hsl(var(--background));
+      color: hsl(var(--foreground));
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 12px;
+      overflow: hidden;
+    }
+
+    /* ─── Main canvas (source viewer or memory editor) ───────────────── */
+    .canvas {
+      flex: 1 1 auto;
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Top-left breadcrumb */
+    .breadcrumb {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 6;
+      background: hsl(var(--card));
+      border: 1px solid hsl(var(--border));
+      border-radius: 10px;
+      padding: 6px 10px;
+      font-size: 11px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .breadcrumb .logo {
+      width: 22px; height: 22px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, #6b8aff, #c47bff);
+      display: flex; align-items: center; justify-content: center;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 12px; font-weight: 700;
+      color: white;
+    }
+    .breadcrumb .sep { color: hsl(var(--muted-foreground) / 0.5); }
+    .breadcrumb .crumb { color: hsl(var(--muted-foreground)); }
+    .breadcrumb .crumb.active {
+      color: hsl(var(--foreground));
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-weight: 600;
+    }
+
+    /* Top-right chips */
+    .chip-row {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      display: flex;
+      gap: 8px;
+      z-index: 6;
+    }
+    .chip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: hsl(var(--card));
+      border: 1px solid hsl(var(--border));
+      border-radius: 10px;
+      padding: 7px 11px;
+      font-size: 11px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .chip .label { color: hsl(var(--muted-foreground)); font-size: 10px; line-height: 1.2; }
+    .chip .value {
+      color: hsl(var(--foreground));
+      font-weight: 600;
+      font-size: 12px;
+      line-height: 1.2;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+    }
+    .chip-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 12px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+      border: 1px solid hsl(var(--border));
+    }
+    .chip-status .pulse {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: hsl(var(--muted-foreground) / 0.5);
+    }
+    .chip-status.verified  { background: hsl(142 71% 45% / 0.12); color: hsl(142 60% 32%); border-color: hsl(142 71% 45% / 0.35); }
+    .chip-status.verified  .pulse { background: hsl(142 71% 45%); }
+    .chip-status.rejected  { background: hsl(var(--destructive) / 0.12); color: hsl(var(--destructive)); border-color: hsl(var(--destructive) / 0.35); }
+    .chip-status.rejected  .pulse { background: hsl(var(--destructive)); }
+    .chip-status.unverified{ background: hsl(var(--card)); color: hsl(var(--muted-foreground)); }
+
+    /* Top-center verdict ring (decorative + informative) */
+    .ring-wrap {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 6;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: hsl(var(--card));
+      border: 1px solid hsl(var(--border));
+      border-radius: 999px;
+      padding: 4px 12px 4px 4px;
+    }
+    .ring { width: 36px; height: 36px; display: block; }
+    .ring-meta { display: flex; flex-direction: column; line-height: 1.1; }
+    .ring-meta .pct { font-size: 13px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, monospace; }
+    .ring-meta .lbl { font-size: 9px; color: hsl(var(--muted-foreground)); text-transform: uppercase; letter-spacing: 0.06em; }
+
+    /* Vertical icon tool strip (right edge of canvas) */
+    .tools {
+      position: absolute;
+      right: 14px;
+      top: 88px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 6;
+    }
+    .tools button {
+      width: 34px; height: 34px;
+      background: hsl(var(--card));
+      border: 1px solid hsl(var(--border));
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      color: hsl(var(--foreground));
+      font-size: 14px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+    }
+    .tools button:hover { background: hsl(var(--muted)); }
+    .tools button.active {
+      background: hsl(217 91% 60%);
+      color: hsl(var(--primary-foreground, 0 0% 100%));
+      border-color: hsl(217 91% 60%);
+    }
+
+    /* Source viewer (proof code) */
+    .src-host {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding: 76px 24px 220px;
+    }
+    .src-host pre {
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 12px;
+      line-height: 1.6;
+      tab-size: 2;
+    }
+    .src-host .ln {
+      display: inline-block;
+      width: 36px;
+      text-align: right;
+      padding-right: 10px;
+      color: hsl(var(--muted-foreground) / 0.4);
+      user-select: none;
+      font-size: 11px;
+    }
+    .src-host .ln.hi {
+      color: hsl(217 91% 60%);
+      font-weight: 600;
+    }
+    .src-host [data-ln].hi-row {
+      background: hsl(217 91% 60% / 0.07);
+      border-left: 2px solid hsl(217 91% 60%);
+      padding-left: 0;
+      margin-left: -2px;
+    }
+    .src-host .lbl  { color: hsl(217 91% 60%); font-weight: 600; }
+    .src-host .kw   { color: hsl(280 70% 55%); font-weight: 500; }
+    .src-host .kind { color: hsl(30 80% 50%); font-weight: 600; }
+    .src-host .by   { color: hsl(142 60% 40%); font-weight: 500; }
+    .src-host .com  { color: hsl(var(--muted-foreground) / 0.6); font-style: italic; }
+
+    /* Empty state on canvas */
+    .canvas-empty {
+      flex: 1 1 auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 10px;
+      color: hsl(var(--muted-foreground));
+      text-align: center;
+      padding: 24px;
+    }
+    .canvas-empty .icon-big {
+      width: 72px; height: 72px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, hsl(217 91% 60% / 0.12), hsl(280 70% 55% / 0.12));
+      display: flex; align-items: center; justify-content: center;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 28px;
+      color: hsl(217 91% 60%);
+    }
+    .canvas-empty .title { font-size: 14px; color: hsl(var(--foreground)); font-weight: 500; }
+    .canvas-empty .subtitle { font-size: 11px; max-width: 320px; line-height: 1.5; }
+
+    /* ─── Bottom overlay: verdict workbench + action pill ─────────────── */
+    /* Lifted above the 22px status bar (status sits at bottom:0). Uses
+       flex-wrap so the action pill drops below the workbench when the
+       canvas is narrow. */
+    .bottom-overlay {
+      position: absolute;
+      bottom: 36px;
+      left: 14px;
+      right: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: end;
+      z-index: 5;
+      pointer-events: none;
+    }
+    .bottom-overlay .workbench { flex: 1 1 260px; min-width: 0; }
+    .bottom-overlay .actions-pill { flex: 0 0 auto; }
+    .bottom-overlay > * { pointer-events: auto; }
+
+    .workbench {
+      background: hsl(var(--card));
+      border: 1px solid hsl(var(--border));
+      border-radius: 12px;
+      padding: 8px 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-width: 100%;
+    }
+    .workbench-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 10px;
+      color: hsl(var(--muted-foreground));
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .workbench-header .spacer { flex: 1; }
+    .workbench-header .mini-btn {
+      border: none; background: transparent;
+      font: inherit; font-size: 10px;
+      cursor: pointer; color: hsl(var(--muted-foreground));
+      padding: 2px 6px; border-radius: 4px;
+    }
+    .workbench-header .mini-btn:hover { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
+    .workbench textarea {
+      width: 100%;
+      min-height: 40px;
+      max-height: 200px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 11.5px;
+      line-height: 1.55;
+      padding: 6px 8px;
+      background: hsl(var(--background));
+      color: hsl(var(--foreground));
+      border: 1px solid hsl(var(--border));
+      border-radius: 6px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .workbench textarea:focus { border-color: hsl(217 91% 60%); }
+    .workbench.empty textarea {
+      min-height: 36px;
+      color: hsl(var(--muted-foreground));
+    }
+
+    /* Action pill (right of workbench) */
+    .actions-pill {
+      display: inline-flex;
+      background: hsl(var(--card));
+      border: 1px solid hsl(var(--border));
+      border-radius: 12px;
+      padding: 4px;
+      gap: 2px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+    }
+    .actions-pill button {
+      border: none; background: transparent;
+      padding: 7px 14px;
+      border-radius: 8px;
+      font: inherit; font-size: 11px; font-weight: 500;
+      color: hsl(var(--muted-foreground));
+      cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .actions-pill button:hover { color: hsl(var(--foreground)); background: hsl(var(--muted) / 0.5); }
+    .actions-pill button.primary {
+      background: hsl(217 91% 60%);
+      color: hsl(var(--primary-foreground, 0 0% 100%));
+    }
+    .actions-pill button.primary:hover { background: hsl(217 91% 55%); }
+    .actions-pill button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .actions-pill .ic { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+
+    /* ─── Right sidebar (cards) ───────────────────────────────────────── */
+    .sidebar {
+      flex: 0 0 340px;
+      max-width: 340px;
+      min-height: 0;
+      height: 100%;
+      border-left: 1px solid hsl(var(--border));
+      background: hsl(var(--card));
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .card {
+      border: 1px solid hsl(var(--border));
+      border-radius: 12px;
+      background: hsl(var(--background));
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 11px 13px;
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+      border-bottom: 1px solid transparent;
+    }
+    .card:not(.collapsed) .card-header { border-bottom-color: hsl(var(--border)); }
+    .card-header .ic {
+      width: 18px; height: 18px;
+      border-radius: 5px;
+      background: hsl(var(--muted));
+      display: flex; align-items: center; justify-content: center;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 11px;
+      color: hsl(var(--muted-foreground));
+    }
+    .card-header .ic.proof  { background: hsl(217 91% 60% / 0.12); color: hsl(217 91% 60%); }
+    .card-header .ic.detail { background: hsl(280 70% 55% / 0.14); color: hsl(280 70% 55%); }
+    .card-header .ic.memory { background: hsl(30 80% 55% / 0.14); color: hsl(30 80% 50%); }
+    .card-header .ic.files  { background: hsl(142 60% 45% / 0.14); color: hsl(142 50% 38%); }
+    .card-header .count {
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 10px;
+      color: hsl(var(--muted-foreground));
+      padding: 1px 6px;
+      background: hsl(var(--muted));
+      border-radius: 4px;
+      font-weight: 500;
+    }
+    .card-header .spacer { flex: 1; }
+    .card-header .chevron {
+      font-size: 10px;
+      color: hsl(var(--muted-foreground));
+      transition: transform 0.15s;
+    }
+    .card.collapsed .chevron { transform: rotate(-90deg); }
+    .card-body { padding: 10px 13px; }
+    .card.collapsed .card-body { display: none; }
+    .card-body.no-pad { padding: 0; }
+
+    /* Files card */
+    .files-section {
+      padding: 8px 0 4px;
+    }
+    .files-section + .files-section { border-top: 1px solid hsl(var(--border) / 0.6); }
+    .section-h {
+      font-size: 9px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: hsl(var(--muted-foreground) / 0.7);
+      padding: 4px 13px 6px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .file-item {
+      padding: 5px 13px;
+      cursor: pointer;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 11px;
+      color: hsl(var(--foreground));
+      opacity: 0.85;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-left: 2px solid transparent;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .file-item:hover { background: hsl(var(--muted) / 0.5); }
+    .file-item.active {
+      background: hsl(217 91% 60% / 0.08);
+      border-left-color: hsl(217 91% 60%);
+      color: hsl(217 91% 60%);
+      opacity: 1;
+    }
+    .file-item .ext {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 3px;
+      background: hsl(var(--muted));
+      color: hsl(var(--muted-foreground));
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .file-item.active .ext { background: hsl(217 91% 60% / 0.15); color: hsl(217 91% 60%); }
+    .file-actions {
+      display: flex; gap: 6px; padding: 8px 13px 4px;
+      border-top: 1px solid hsl(var(--border) / 0.6);
+      margin-top: 4px;
+    }
+    .file-actions button {
+      flex: 1;
+      padding: 5px 8px;
+      font: inherit; font-size: 11px;
+      border: 1px solid hsl(var(--border));
+      border-radius: 6px;
+      background: hsl(var(--background));
+      color: hsl(var(--foreground));
+      cursor: pointer;
+      text-align: center;
+    }
+    .file-actions button:hover { background: hsl(var(--muted) / 0.6); }
+    .empty-card {
+      padding: 12px 13px;
+      font-size: 11px;
+      color: hsl(var(--muted-foreground));
+      font-style: italic;
+    }
+
+    /* Proof tree card */
+    .filter-pill {
+      display: inline-flex;
+      background: hsl(var(--muted) / 0.5);
+      border-radius: 999px;
+      padding: 2px;
+      gap: 1px;
+    }
+    .filter-pill button {
+      border: none; background: transparent;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font: inherit; font-size: 10px;
+      cursor: pointer;
+      color: hsl(var(--muted-foreground));
+    }
+    .filter-pill button.active {
+      background: hsl(var(--background));
+      color: hsl(217 91% 60%);
+      box-shadow: 0 0 0 1px hsl(217 91% 60% / 0.4) inset;
+    }
+    .tree {
+      max-height: 360px;
+      overflow-y: auto;
+      padding: 4px 0;
+    }
+    .proof-h {
+      padding: 8px 13px 3px;
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: hsl(var(--muted-foreground) / 0.7);
+    }
+    .step {
+      padding: 5px 13px;
+      font-size: 11.5px;
+      cursor: pointer;
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+      border-left: 2px solid transparent;
+    }
+    .step:hover { background: hsl(var(--muted) / 0.5); }
+    .step.active {
+      background: hsl(var(--muted));
+      border-left-color: hsl(217 91% 60%);
+    }
+    .step .dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: hsl(var(--muted-foreground) / 0.4);
+      flex: 0 0 auto;
+      align-self: center;
+    }
+    .step.accept .dot { background: hsl(142 71% 45%); box-shadow: 0 0 0 3px hsl(142 71% 45% / 0.18); }
+    .step.reject .dot { background: hsl(var(--destructive)); box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.18); }
+    .step.gap    .dot { background: hsl(38 90% 55%); box-shadow: 0 0 0 3px hsl(38 90% 55% / 0.18); }
+    .step .step-lbl {
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      color: hsl(217 91% 60%);
+      font-weight: 600;
+      font-size: 10.5px;
+      min-width: 30px;
+    }
+    .step .step-kw {
+      color: hsl(280 70% 55%);
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      min-width: 38px;
+    }
+    .step .step-claim {
+      flex: 1 1 0;
+      min-width: 0;
+      color: hsl(var(--foreground));
+      opacity: 0.85;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 11px;
+    }
+    .step.indent-1 { padding-left: 28px; }
+    .step.indent-2 { padding-left: 42px; }
+    .step.qed {
+      padding: 6px 13px;
+      opacity: 0.7;
+      font-style: italic;
+    }
+    .step.qed .step-lbl { color: hsl(30 80% 50%); }
+
+    /* Step detail card */
+    .detail-section { padding: 6px 0; }
+    .detail-section + .detail-section { border-top: 1px solid hsl(var(--border) / 0.4); }
+    .detail-h {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: hsl(var(--muted-foreground) / 0.7);
+      margin-bottom: 4px;
+    }
+    .detail-body {
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 11px;
+      color: hsl(var(--foreground));
+      line-height: 1.55;
+    }
+    .detail-body .ref {
+      display: inline-block;
+      padding: 1px 7px;
+      margin: 2px 3px 2px 0;
+      border-radius: 4px;
+      background: hsl(217 91% 60% / 0.1);
+      color: hsl(217 91% 60%);
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 10.5px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .detail-body .ref:hover { background: hsl(217 91% 60% / 0.18); }
+    .detail-body .verdict-tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .detail-body .verdict-tag.accept { background: hsl(142 71% 45% / 0.15); color: hsl(142 60% 30%); }
+    .detail-body .verdict-tag.reject { background: hsl(var(--destructive) / 0.15); color: hsl(var(--destructive)); }
+    .detail-body .verdict-tag.gap    { background: hsl(38 90% 55% / 0.15); color: hsl(30 80% 40%); }
+    .detail-body .verdict-tag.none   { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+
+    /* Memory card */
+    .mem-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .mem-row:last-child { margin-bottom: 0; }
+    .mem-label {
+      font-size: 9px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: hsl(var(--muted-foreground) / 0.7);
+    }
+    .mem-goal {
+      font-size: 12px;
+      color: hsl(var(--foreground));
+      line-height: 1.5;
+    }
+    .mem-progress {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .mem-progress .num {
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .mem-progress .bar {
+      flex: 1;
+      height: 5px;
+      background: hsl(var(--muted));
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .mem-progress .fill {
+      height: 100%;
+      background: linear-gradient(90deg, hsl(217 91% 60%), hsl(280 70% 55%));
+      transition: width 200ms ease;
+    }
+    .mem-since {
+      font-size: 10px;
+      color: hsl(var(--muted-foreground));
+      font-family: ui-monospace, SFMono-Regular, monospace;
+    }
+    .queue-item {
+      padding: 4px 0;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      font-size: 11.5px;
+    }
+    .queue-item .check {
+      flex: 0 0 14px; height: 14px;
+      border: 1px solid hsl(var(--border));
+      border-radius: 3px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      align-self: center;
+    }
+    .queue-item.done .check {
+      background: hsl(142 71% 45%);
+      color: white;
+      border-color: hsl(142 71% 45%);
+    }
+    .queue-item.done .text {
+      color: hsl(var(--muted-foreground));
+      text-decoration: line-through;
+    }
+    .queue-item .text { flex: 1; }
+    .insight-line {
+      padding: 3px 0;
+      font-size: 11px;
+      color: hsl(var(--foreground));
+      line-height: 1.5;
+      border-bottom: 1px solid hsl(var(--border) / 0.4);
+    }
+    .insight-line:last-child { border-bottom: none; }
+
+    /* ─── Status bar ─────────────────────────────────────────────────── */
+    .status-bar {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      border-top: 1px solid hsl(var(--border));
+      padding: 4px 14px;
+      font-size: 10.5px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      color: hsl(var(--muted-foreground));
+      background: hsl(var(--card) / 0.85);
+      backdrop-filter: blur(6px);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 7;
+      height: 22px;
+    }
+    .status-bar.err { color: hsl(var(--destructive)); }
+    .status-bar .dot {
+      display: inline-block;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: hsl(var(--muted-foreground) / 0.5);
+    }
+    .status-bar .dot.ok { background: hsl(142 71% 45%); }
+    .status-bar .dot.err { background: hsl(var(--destructive)); }
+    .status-bar .dot.pending { background: hsl(217 91% 60%); animation: blink 1s infinite; }
+    @keyframes blink { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }
+
+    /* Helpers */
+    .empty-msg {
+      font-size: 11px;
+      color: hsl(var(--muted-foreground));
+      font-style: italic;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <!-- ═══ MAIN CANVAS ════════════════════════════════════════════════════ -->
+  <div class="canvas" id="canvas">
+
+    <!-- Top-left breadcrumb -->
+    <div class="breadcrumb">
+      <div class="logo">w</div>
+      <span class="crumb">witsoc</span>
+      <span class="sep">/</span>
+      <span class="crumb active" id="crumb-file">—</span>
+    </div>
+
+    <!-- Top-center verdict ring -->
+    <div class="ring-wrap" id="ring-wrap">
+      <svg class="ring" viewBox="0 0 36 36">
+        <circle cx="18" cy="18" r="15" fill="none" stroke="hsl(var(--muted))" stroke-width="3.5"/>
+        <circle id="ring-accept" pathLength="100" cx="18" cy="18" r="15" fill="none"
+                stroke="hsl(142 71% 45%)" stroke-width="3.5"
+                stroke-dasharray="0 100" stroke-dashoffset="0" transform="rotate(-90 18 18)" stroke-linecap="butt"/>
+        <circle id="ring-gap"    pathLength="100" cx="18" cy="18" r="15" fill="none"
+                stroke="hsl(38 90% 55%)"  stroke-width="3.5"
+                stroke-dasharray="0 100" stroke-dashoffset="0" transform="rotate(-90 18 18)" stroke-linecap="butt"/>
+        <circle id="ring-reject" pathLength="100" cx="18" cy="18" r="15" fill="none"
+                stroke="hsl(var(--destructive))" stroke-width="3.5"
+                stroke-dasharray="0 100" stroke-dashoffset="0" transform="rotate(-90 18 18)" stroke-linecap="butt"/>
+      </svg>
+      <div class="ring-meta">
+        <span class="pct" id="ring-pct">—</span>
+        <span class="lbl">verified</span>
+      </div>
+    </div>
+
+    <!-- Top-right chips -->
+    <div class="chip-row">
+      <div class="chip">
+        <div>
+          <div class="label">Steps</div>
+          <div class="value" id="chip-steps">0</div>
+        </div>
+      </div>
+      <div class="chip">
+        <div>
+          <div class="label">Verdicts</div>
+          <div class="value" id="chip-verdicts">0 / 0</div>
+        </div>
+      </div>
+      <div class="chip-status unverified" id="chip-status">
+        <span class="pulse"></span>UNVERIFIED
+      </div>
+    </div>
+
+    <!-- Right edge tool strip -->
+    <div class="tools">
+      <button id="tool-refresh"  title="Refresh file list">↻</button>
+      <button id="tool-focus"    title="Focus selected step">⊕</button>
+      <button id="tool-sidebar"  title="Collapse sidebar">▣</button>
+    </div>
+
+    <!-- Source viewer / memory editor -->
+    <div class="src-host" id="src-host">
+      <div class="canvas-empty">
+        <div class="icon-big">∴</div>
+        <div class="title">Pick a .wit file to view</div>
+        <div class="subtitle">Author semiformal proofs. Run check, then verify to see LLM-ready contexts. Paste verdicts back, save the receipt.</div>
+      </div>
+    </div>
+
+    <!-- Bottom overlay: verdict workbench + action pill -->
+    <div class="bottom-overlay">
+      <div class="workbench empty" id="workbench">
+        <div class="workbench-header">
+          <span>Verdict workbench</span>
+          <span id="wb-hint" class="empty-msg" style="text-transform:none;letter-spacing:0;font-size:10px;">Run verify to populate contexts; paste verdicts back over them.</span>
+          <span class="spacer"></span>
+          <button class="mini-btn" id="wb-clear">Clear</button>
+        </div>
+        <textarea id="verdict-input" placeholder="[1] ACCEPT: standard result, cited correctly
+[2] ACCEPT: algebra checks
+[3.1] REJECT: sign error in expansion"></textarea>
+      </div>
+
+      <div class="actions-pill">
+        <button id="act-check"   title="wit check"><span class="ic">⌘</span>check</button>
+        <button id="act-context" title="wit context"><span class="ic">∇</span>context</button>
+        <button id="act-verify"  class="primary" title="wit verify"><span class="ic">⚡</span>verify</button>
+        <button id="act-save"    title="wit receipt"><span class="ic">💾</span>save</button>
+      </div>
+    </div>
+
+    <!-- Status bar -->
+    <div id="status-bar" class="status-bar">
+      <span id="status-dot" class="dot"></span>
+      <span id="status-text">Ready.</span>
+    </div>
+  </div>
+
+  <!-- ═══ SIDEBAR ════════════════════════════════════════════════════════ -->
+  <aside class="sidebar" id="sidebar">
+
+    <!-- Files card -->
+    <div class="card" id="card-files">
+      <div class="card-header" data-toggle="card-files">
+        <div class="ic files">f</div>
+        <span>Files</span>
+        <span class="count" id="files-count">0</span>
+        <span class="spacer"></span>
+        <span class="chevron">▾</span>
+      </div>
+      <div class="card-body no-pad">
+        <div class="files-section">
+          <div class="section-h">Workspace .wit</div>
+          <div id="wit-files"><div class="empty-card">Looking…</div></div>
+        </div>
+        <div class="files-section">
+          <div class="section-h">Workspace .soc</div>
+          <div id="soc-files"><div class="empty-card">Looking…</div></div>
+        </div>
+        <div class="file-actions">
+          <button id="btn-new-wit">+ .wit</button>
+          <button id="btn-new-soc">+ .soc</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Proof tree card -->
+    <div class="card" id="card-tree">
+      <div class="card-header" data-toggle="card-tree">
+        <div class="ic proof">⊢</div>
+        <span>Proof tree</span>
+        <span class="count" id="tree-count">0</span>
+        <span class="spacer"></span>
+        <span class="filter-pill" id="filter-pill" onclick="event.stopPropagation()">
+          <button data-filter="all" class="active">all</button>
+          <button data-filter="reject">✗</button>
+          <button data-filter="gap">●</button>
+          <button data-filter="accept">✓</button>
+        </span>
+        <span class="chevron">▾</span>
+      </div>
+      <div class="card-body no-pad">
+        <div id="tree" class="tree"><div class="empty-card">No file selected.</div></div>
+      </div>
+    </div>
+
+    <!-- Step detail card -->
+    <div class="card collapsed" id="card-detail">
+      <div class="card-header" data-toggle="card-detail">
+        <div class="ic detail">i</div>
+        <span>Step detail</span>
+        <span class="count" id="detail-label">—</span>
+        <span class="spacer"></span>
+        <span class="chevron">▾</span>
+      </div>
+      <div class="card-body">
+        <div id="detail"><div class="empty-msg">Click a step in the tree.</div></div>
+      </div>
+    </div>
+
+    <!-- Memory card -->
+    <div class="card collapsed" id="card-memory">
+      <div class="card-header" data-toggle="card-memory">
+        <div class="ic memory">⌘</div>
+        <span>Soc memory</span>
+        <span class="count" id="memory-label">—</span>
+        <span class="spacer"></span>
+        <span class="chevron">▾</span>
+      </div>
+      <div class="card-body">
+        <div id="memory-body"><div class="empty-msg">Open a .soc file from the Files card.</div></div>
+      </div>
+    </div>
+  </aside>
+
+<script>
+  const os = window.acquireOSApi();
+
+  /* ─── State ────────────────────────────────────────────────────────── */
+  let WORKTREE = null;
+  let WIT_FILES = [];
+  let SOC_FILES = [];
+  let CURRENT_WIT = null;
+  let CURRENT_SOC = null;
+  let LAST_PARSED = null;     // {status, module, claims, proofs}
+  let LAST_RECEIPT = null;
+  let LAST_SOC = null;
+  let SELECTED_STEP = null;
+  let FILTER = "all";
+  let SIDEBAR_COLLAPSED = false;
+
+  /* ─── Theme ────────────────────────────────────────────────────────── */
+  function applyTheme(payload) {
+    const mode = payload && payload.mode;
+    document.documentElement.classList.toggle("dark", mode === "dark");
+    const font = payload && payload.font;
+    if (font && font.body) document.body.style.fontFamily = font.body;
+  }
+  os.theme.get().then(applyTheme).catch(() => applyTheme({ mode: "light" }));
+  os.theme.subscribe(applyTheme);
+
+  /* ─── Status ───────────────────────────────────────────────────────── */
+  function setStatus(text, kind = "ok") {
+    document.getElementById("status-text").textContent = text;
+    const bar = document.getElementById("status-bar");
+    bar.classList.toggle("err", kind === "err");
+    const dot = document.getElementById("status-dot");
+    dot.className = "dot";
+    if (kind === "err")     dot.classList.add("err");
+    if (kind === "pending") dot.classList.add("pending");
+    if (kind === "ok")      dot.classList.add("ok");
+  }
+
+  /* ─── Bootstrap ────────────────────────────────────────────────────── */
+  async function bootstrap() {
+    setStatus("Connecting…", "pending");
+    try {
+      const info = await os.plugin.info();
+      if (info.status !== "running" || !info.port) {
+        setStatus("Plugin server not running.", "err");
+        return;
+      }
+    } catch (e) {
+      setStatus("Bridge error: " + (e.message || e), "err");
+      return;
+    }
+    try {
+      const session = await os.session.info();
+      WORKTREE = session.worktree || session.folder || null;
+    } catch { /* keep null */ }
+    if (!WORKTREE) {
+      setStatus("No worktree available.", "err");
+      return;
+    }
+    await refreshFiles();
+    setStatus("Ready.");
+  }
+
+  /* ─── File listing ─────────────────────────────────────────────────── */
+  async function refreshFiles() {
+    if (!WORKTREE) return;
+    try {
+      const r = await fetch("/plugins/witsoc/proxy/api/list?dir=" + encodeURIComponent(WORKTREE), { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      WIT_FILES = data.wit_files || [];
+      SOC_FILES = data.soc_files || [];
+    } catch (e) {
+      setStatus("List failed: " + (e.message || e), "err");
+      WIT_FILES = []; SOC_FILES = [];
+    }
+    renderWitList();
+    renderSocList();
+    document.getElementById("files-count").textContent =
+      (WIT_FILES.length + SOC_FILES.length);
+  }
+
+  function renderWitList() {
+    const el = document.getElementById("wit-files");
+    el.innerHTML = "";
+    if (!WIT_FILES.length) { el.innerHTML = '<div class="empty-card">No .wit files.</div>'; return; }
+    for (const f of WIT_FILES) {
+      const div = document.createElement("div");
+      div.className = "file-item" + (f.path === CURRENT_WIT ? " active" : "");
+      div.title = f.path;
+      div.innerHTML = '<span class="ext">WIT</span><span>' + escapeHtml(f.rel) + '</span>';
+      div.addEventListener("click", () => openWit(f.path));
+      el.appendChild(div);
+    }
+  }
+
+  function renderSocList() {
+    const el = document.getElementById("soc-files");
+    el.innerHTML = "";
+    if (!SOC_FILES.length) { el.innerHTML = '<div class="empty-card">No .soc files.</div>'; return; }
+    for (const f of SOC_FILES) {
+      const div = document.createElement("div");
+      div.className = "file-item" + (f.path === CURRENT_SOC ? " active" : "");
+      div.title = f.path;
+      div.innerHTML = '<span class="ext">SOC</span><span>' + escapeHtml(f.rel) + '</span>';
+      div.addEventListener("click", () => openSoc(f.path));
+      el.appendChild(div);
+    }
+  }
+
+  /* ─── Open .wit ────────────────────────────────────────────────────── */
+  async function openWit(absPath) {
+    CURRENT_WIT = absPath;
+    SELECTED_STEP = null;
+    document.getElementById("crumb-file").textContent = absPath.split("/").slice(-1)[0];
+    setStatus("Loading…", "pending");
+    try {
+      const [parsedR, sourceR] = await Promise.all([
+        fetch("/plugins/witsoc/proxy/api/parse?path=" + encodeURIComponent(absPath), { method: "POST" }),
+        fetch("/plugins/witsoc/proxy/api/file?path="  + encodeURIComponent(absPath)),
+      ]);
+      const parsed = await parsedR.json();
+      const source = await sourceR.text();
+      LAST_PARSED  = parsed.parsed;
+      LAST_RECEIPT = parsed.receipt;
+      renderSource(source);
+      renderTree();
+      renderHeader();
+      renderRing();
+      renderWitList();
+      // Auto-expand tree card, collapse memory
+      uncollapseCard("card-tree");
+      collapseCard("card-memory");
+      setStatus("Loaded " + absPath.split("/").slice(-1)[0]);
+    } catch (e) {
+      setStatus("Open failed: " + (e.message || e), "err");
+    }
+  }
+
+  function renderHeader() {
+    const status = (LAST_PARSED && LAST_PARSED.status) || "UNVERIFIED";
+    const chip = document.getElementById("chip-status");
+    chip.className = "chip-status " + status.toLowerCase();
+    chip.innerHTML = '<span class="pulse"></span>' + status;
+    const stepCount = (LAST_PARSED && LAST_PARSED.proofs)
+      ? LAST_PARSED.proofs.reduce((n, p) => n + p.steps.length, 0) : 0;
+    document.getElementById("chip-steps").textContent = String(stepCount);
+    const verdictCount = countVerdicts();
+    document.getElementById("chip-verdicts").textContent =
+      verdictCount.scored + " / " + stepCount;
+    document.getElementById("tree-count").textContent = String(stepCount);
+  }
+
+  function countVerdicts() {
+    const out = { accept: 0, reject: 0, gap: 0, scored: 0 };
+    if (!LAST_PARSED) return out;
+    for (const proof of LAST_PARSED.proofs || []) {
+      for (const step of proof.steps) {
+        const v = (verdictFor(step.label) || "").toLowerCase();
+        if (v.startsWith("accept")) { out.accept++; out.scored++; }
+        else if (v.startsWith("reject")) { out.reject++; out.scored++; }
+        else if (v.startsWith("gap"))    { out.gap++;    out.scored++; }
+      }
+    }
+    return out;
+  }
+
+  function renderRing() {
+    const total = (LAST_PARSED && LAST_PARSED.proofs)
+      ? LAST_PARSED.proofs.reduce((n, p) => n + p.steps.length, 0) : 0;
+    const c = countVerdicts();
+    const pct = total > 0 ? Math.round((c.accept / total) * 100) : 0;
+    document.getElementById("ring-pct").textContent = total > 0 ? pct + "%" : "—";
+    // pathLength=100 normalizes; each arc occupies a slot starting at its
+    // cumulative offset from 12-o'clock (rotate(-90) puts 0 at the top).
+    const accept = total > 0 ? (c.accept / total) * 100 : 0;
+    const gap    = total > 0 ? (c.gap    / total) * 100 : 0;
+    const reject = total > 0 ? (c.reject / total) * 100 : 0;
+    const setArc = (id, len, startAt) => {
+      const el = document.getElementById(id);
+      el.setAttribute("stroke-dasharray", len + " " + (100 - len));
+      // Negative dashoffset shifts the dash CCW; with rotate(-90) and stroke
+      // drawn clockwise, offset = -startAt slides the arc to its start.
+      el.setAttribute("stroke-dashoffset", -startAt);
+    };
+    setArc("ring-accept", accept, 0);
+    setArc("ring-gap",    gap,    accept);
+    setArc("ring-reject", reject, accept + gap);
+  }
+
+  /* ─── Source render ────────────────────────────────────────────────── */
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  }
+  function highlightLine(line) {
+    if (/^\s*--/.test(line)) return '<span class="com">' + escapeHtml(line) + "</span>";
+    let out = escapeHtml(line);
+    out = out.replace(/\[(\d+(?:\.\d+)*)\]/g, '<span class="lbl">[$1]</span>');
+    out = out.replace(/\b(MODULE|THEOREM|LEMMA|PROPOSITION|COROLLARY|CONJECTURE|ALGORITHM|REDUCTION|DEFINE|PROOF\s+OF|GIVEN|CLAIM|IMPORT|EXPORT)\b/g,
+                       '<span class="kind">$1</span>');
+    out = out.replace(/\b(HAVE|SHOW|ASSUME|LET|CONSIDER|SUFFICES|CASE|CITE|GAP|QED)\b/g,
+                       '<span class="kw">$1</span>');
+    out = out.replace(/\b(BY)\b/g, '<span class="by">BY</span>');
+    return out;
+  }
+  function renderSource(src) {
+    const lines = src.split(/\r?\n/);
+    const host = document.getElementById("src-host");
+    const out = [];
+    out.push("<pre><code>");
+    for (let i = 0; i < lines.length; i++) {
+      out.push('<span data-ln="' + (i + 1) + '"><span class="ln">' + (i + 1) + "</span>" + highlightLine(lines[i]) + "</span>\n");
+    }
+    out.push("</code></pre>");
+    host.innerHTML = out.join("");
+  }
+  function highlightLineNum(n) {
+    document.querySelectorAll(".src-host .ln.hi, .src-host .hi-row").forEach((el) => {
+      el.classList.remove("hi");
+      el.classList.remove("hi-row");
+    });
+    if (!n) return;
+    const wrap = document.querySelector('.src-host [data-ln="' + n + '"]');
+    if (wrap) {
+      wrap.classList.add("hi-row");
+      const lnEl = wrap.querySelector(".ln");
+      if (lnEl) lnEl.classList.add("hi");
+      wrap.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  /* ─── Proof tree ───────────────────────────────────────────────────── */
+  function verdictFor(label) {
+    if (!LAST_RECEIPT) return null;
+    const verdicts = LAST_RECEIPT.verdicts || LAST_RECEIPT.steps || [];
+    for (const v of verdicts) {
+      const lbl = v.label || v.step || v.id;
+      if (lbl === label) return v.verdict || v.status || null;
+    }
+    return null;
+  }
+  function verdictClass(v) {
+    if (!v) return "";
+    const x = v.toLowerCase();
+    if (x.startsWith("accept")) return "accept";
+    if (x.startsWith("reject")) return "reject";
+    if (x.startsWith("gap"))    return "gap";
+    return "";
+  }
+  function stepIndent(label) {
+    const parts = String(label).split(".").length;
+    return Math.min(parts - 1, 2);
+  }
+  function renderTree() {
+    const treeEl = document.getElementById("tree");
+    treeEl.innerHTML = "";
+    if (!LAST_PARSED || !LAST_PARSED.proofs.length) {
+      treeEl.innerHTML = '<div class="empty-card">No proof blocks parsed.</div>';
+      return;
+    }
+    for (const proof of LAST_PARSED.proofs) {
+      const h = document.createElement("div");
+      h.className = "proof-h";
+      h.textContent = "Proof · " + proof.name;
+      treeEl.appendChild(h);
+
+      for (const step of proof.steps) {
+        const v = verdictFor(step.label) || "";
+        const vc = verdictClass(v);
+        if (FILTER !== "all" && vc !== FILTER) continue;
+        const div = document.createElement("div");
+        div.className = "step " + vc + " indent-" + stepIndent(step.label) +
+          (SELECTED_STEP === step.label ? " active" : "");
+        div.dataset.label = step.label;
+        div.dataset.line = step.line;
+        div.innerHTML =
+          '<span class="dot"></span>' +
+          '<span class="step-lbl">[' + step.label + "]</span>" +
+          '<span class="step-kw">' + escapeHtml(step.keyword) + "</span>" +
+          '<span class="step-claim">' + escapeHtml(step.claim || "") + "</span>";
+        div.addEventListener("click", () => selectStep(step));
+        treeEl.appendChild(div);
+      }
+      if (proof.qed) {
+        const div = document.createElement("div");
+        div.className = "step qed";
+        div.innerHTML =
+          '<span class="dot"></span>' +
+          '<span class="step-lbl">QED</span>' +
+          '<span class="step-kw"></span>' +
+          '<span class="step-claim">BY ' + escapeHtml(proof.qed.by || "") + "</span>";
+        treeEl.appendChild(div);
+      }
+    }
+  }
+
+  function selectStep(step) {
+    SELECTED_STEP = step.label;
+    renderTree();
+    highlightLineNum(step.line);
+    showDetail(step);
+    uncollapseCard("card-detail");
+  }
+
+  function showDetail(step) {
+    document.getElementById("detail-label").textContent = "[" + step.label + "]";
+    const verdict = verdictFor(step.label);
+    const vc = verdictClass(verdict);
+    let html = "";
+    html += '<div class="detail-section">';
+    html += '<div class="detail-h">Claim</div>';
+    html += '<div class="detail-body"><span class="step-lbl">[' + step.label + "]</span> "
+          + '<span class="step-kw">' + escapeHtml(step.keyword) + "</span> "
+          + escapeHtml(step.claim || "") + "</div>";
+    html += '</div>';
+
+    if (step.by) {
+      html += '<div class="detail-section">';
+      html += '<div class="detail-h">By</div>';
+      html += '<div class="detail-body">' + escapeHtml(step.by) + '</div>';
+      const refs = (step.by.match(/\[(\d+(?:\.\d+)*)\]/g) || []).map((s) => s.slice(1, -1));
+      if (refs.length) {
+        html += '<div class="detail-body" style="margin-top:6px;">';
+        html += '<span class="detail-h" style="display:inline;margin-right:6px;">Premises</span>';
+        for (const r of refs) html += '<span class="ref" data-jump="' + r + '">[' + r + "]</span>";
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    html += '<div class="detail-section">';
+    html += '<div class="detail-h">Verdict</div>';
+    if (verdict) {
+      html += '<div class="detail-body"><span class="verdict-tag ' + vc + '">' + escapeHtml(verdict) + '</span></div>';
+    } else {
+      html += '<div class="detail-body"><span class="verdict-tag none">none yet</span></div>';
+    }
+    html += '</div>';
+
+    const d = document.getElementById("detail");
+    d.innerHTML = html;
+    d.querySelectorAll(".ref").forEach((el) => {
+      el.addEventListener("click", () => {
+        const lbl = el.dataset.jump;
+        for (const proof of (LAST_PARSED.proofs || [])) {
+          for (const s of proof.steps) {
+            if (s.label === lbl) { selectStep(s); return; }
+          }
+        }
+      });
+    });
+  }
+
+  /* ─── Actions ──────────────────────────────────────────────────────── */
+  async function runCheck() {
+    if (!CURRENT_WIT) return;
+    setStatus("wit check…", "pending");
+    try {
+      const r = await fetch("/plugins/witsoc/proxy/api/check?path=" + encodeURIComponent(CURRENT_WIT), { method: "POST" });
+      const data = await r.json();
+      const tail = ((data.stdout || "") + "\n" + (data.stderr || "")).trim().split("\n").slice(-2).join(" · ");
+      setStatus("check exit=" + data.exit_code + (tail ? "  " + tail : ""), data.exit_code === 0 ? "ok" : "err");
+    } catch (e) { setStatus("check failed: " + (e.message || e), "err"); }
+  }
+  async function runVerify(step = null) {
+    if (!CURRENT_WIT) return;
+    setStatus("wit verify…", "pending");
+    try {
+      let url = "/plugins/witsoc/proxy/api/verify?path=" + encodeURIComponent(CURRENT_WIT);
+      if (step) url += "&step=" + encodeURIComponent(step);
+      const r = await fetch(url, { method: "POST" });
+      const data = await r.json();
+      const ta = document.getElementById("verdict-input");
+      ta.value = data.stdout || "";
+      reflectWorkbench();
+      setStatus("verify exit=" + data.exit_code + " — contexts shown; paste verdicts back over them",
+                data.exit_code === 0 ? "ok" : "err");
+    } catch (e) { setStatus("verify failed: " + (e.message || e), "err"); }
+  }
+  async function runContext() {
+    if (!CURRENT_WIT) return;
+    setStatus("wit context…", "pending");
+    try {
+      const r = await fetch("/plugins/witsoc/proxy/api/context?path=" + encodeURIComponent(CURRENT_WIT), { method: "POST" });
+      const data = await r.json();
+      const ta = document.getElementById("verdict-input");
+      ta.value = data.stdout || "";
+      reflectWorkbench();
+      setStatus("context exit=" + data.exit_code, data.exit_code === 0 ? "ok" : "err");
+    } catch (e) { setStatus("context failed: " + (e.message || e), "err"); }
+  }
+  async function saveReceipt() {
+    if (!CURRENT_WIT) return;
+    const body = document.getElementById("verdict-input").value;
+    if (!body.trim()) { setStatus("nothing to save", "err"); return; }
+    setStatus("wit receipt…", "pending");
+    try {
+      const r = await fetch("/plugins/witsoc/proxy/api/receipt?path=" + encodeURIComponent(CURRENT_WIT), {
+        method: "POST", body,
+      });
+      const data = await r.json();
+      LAST_RECEIPT = data.receipt;
+      await openWit(CURRENT_WIT);
+      setStatus("receipt saved (exit=" + data.exit_code + ")", data.exit_code === 0 ? "ok" : "err");
+    } catch (e) { setStatus("receipt failed: " + (e.message || e), "err"); }
+  }
+
+  function reflectWorkbench() {
+    const wb = document.getElementById("workbench");
+    const ta = document.getElementById("verdict-input");
+    wb.classList.toggle("empty", !ta.value.trim());
+  }
+
+  /* ─── Soc ──────────────────────────────────────────────────────────── */
+  async function openSoc(absPath) {
+    CURRENT_SOC = absPath;
+    setStatus("Loading .soc…", "pending");
+    try {
+      const r = await fetch("/plugins/witsoc/proxy/api/soc?path=" + encodeURIComponent(absPath));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      LAST_SOC = data.parsed;
+      renderMemory(LAST_SOC);
+      renderSocList();
+      uncollapseCard("card-memory");
+      document.getElementById("memory-label").textContent = absPath.split("/").slice(-1)[0];
+      setStatus("Loaded " + absPath.split("/").slice(-1)[0]);
+    } catch (e) { setStatus("Open .soc failed: " + (e.message || e), "err"); }
+  }
+  function renderMemory(s) {
+    if (!s) {
+      document.getElementById("memory-body").innerHTML = '<div class="empty-msg">No memory data.</div>';
+      return;
+    }
+    const a = s.progress_a, b = s.progress_b;
+    const pct = (a != null && b > 0) ? Math.min(100, (a / b) * 100) : 0;
+
+    let html = "";
+    html += '<div class="mem-row">';
+    html += '<div class="mem-label">Goal</div>';
+    html += '<div class="mem-goal">' + (s.goal ? escapeHtml(s.goal) : '<span class="empty-msg">(no goal set)</span>') + '</div>';
+    html += '</div>';
+
+    html += '<div class="mem-row">';
+    html += '<div class="mem-label">Progress</div>';
+    html += '<div class="mem-progress">';
+    html += '<span class="num">' + (a == null ? "—" : a) + " / " + (b == null ? "—" : b) + '</span>';
+    html += '<div class="bar"><div class="fill" style="width:' + pct + '%"></div></div>';
+    html += '<span class="mem-since">' + (s.insights_since == null ? "—" : s.insights_since) + ' since</span>';
+    html += '</div>';
+    html += '</div>';
+
+    if (s.queue && s.queue.length) {
+      html += '<div class="mem-row">';
+      html += '<div class="mem-label">Queue · ' + s.queue.length + '</div>';
+      html += '<div>';
+      for (const q of s.queue.slice(0, 6)) {
+        html += '<div class="queue-item' + (q.done ? " done" : "") + '">';
+        html += '<span class="check">' + (q.done ? "✓" : "") + '</span>';
+        html += '<span class="text">' + escapeHtml(q.text) + '</span>';
+        html += '</div>';
+      }
+      if (s.queue.length > 6) html += '<div class="empty-msg" style="padding:4px 0;">+ ' + (s.queue.length - 6) + ' more…</div>';
+      html += '</div></div>';
+    }
+
+    if (s.insights && s.insights.length) {
+      html += '<div class="mem-row">';
+      html += '<div class="mem-label">Insights · ' + s.insights.length + '</div>';
+      html += '<div>';
+      for (const ins of s.insights.slice(0, 4)) {
+        html += '<div class="insight-line">• ' + escapeHtml(ins.text) + '</div>';
+      }
+      if (s.insights.length > 4) html += '<div class="empty-msg" style="padding:4px 0;">+ ' + (s.insights.length - 4) + ' more…</div>';
+      html += '</div></div>';
+    }
+    document.getElementById("memory-body").innerHTML = html;
+  }
+
+  /* ─── Card collapse helpers ────────────────────────────────────────── */
+  function collapseCard(id)    { document.getElementById(id).classList.add("collapsed"); }
+  function uncollapseCard(id)  { document.getElementById(id).classList.remove("collapsed"); }
+
+  document.querySelectorAll(".card-header[data-toggle]").forEach((h) => {
+    h.addEventListener("click", () => {
+      const card = document.getElementById(h.dataset.toggle);
+      if (card) card.classList.toggle("collapsed");
+    });
+  });
+
+  /* ─── Filter pill ──────────────────────────────────────────────────── */
+  document.querySelectorAll("#filter-pill button").forEach((b) => {
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      FILTER = b.dataset.filter;
+      document.querySelectorAll("#filter-pill button").forEach((x) => x.classList.toggle("active", x === b));
+      renderTree();
+    });
+  });
+
+  /* ─── Tools (right strip) ──────────────────────────────────────────── */
+  document.getElementById("tool-refresh").addEventListener("click", refreshFiles);
+  document.getElementById("tool-focus").addEventListener("click", () => {
+    if (!SELECTED_STEP || !LAST_PARSED) return;
+    for (const p of LAST_PARSED.proofs) {
+      for (const s of p.steps) if (s.label === SELECTED_STEP) { highlightLineNum(s.line); return; }
+    }
+  });
+  document.getElementById("tool-sidebar").addEventListener("click", () => {
+    SIDEBAR_COLLAPSED = !SIDEBAR_COLLAPSED;
+    document.getElementById("sidebar").classList.toggle("hidden", SIDEBAR_COLLAPSED);
+    document.getElementById("tool-sidebar").classList.toggle("active", SIDEBAR_COLLAPSED);
+  });
+
+  /* ─── Action buttons ───────────────────────────────────────────────── */
+  document.getElementById("act-check").addEventListener("click", runCheck);
+  document.getElementById("act-verify").addEventListener("click", () => runVerify(null));
+  document.getElementById("act-context").addEventListener("click", runContext);
+  document.getElementById("act-save").addEventListener("click", saveReceipt);
+  document.getElementById("wb-clear").addEventListener("click", () => {
+    document.getElementById("verdict-input").value = "";
+    reflectWorkbench();
+  });
+  document.getElementById("verdict-input").addEventListener("input", reflectWorkbench);
+
+  /* ─── New file actions ─────────────────────────────────────────────── */
+  document.getElementById("btn-new-soc").addEventListener("click", async () => {
+    if (!WORKTREE) return;
+    try {
+      const target = WORKTREE + "/research.soc";
+      const r = await fetch("/plugins/witsoc/proxy/api/soc?path=" + encodeURIComponent(target), {
+        method: "POST",
+        body: "# Soc Working Memory\n\nGOAL: <one-line statement>\n\nPROGRESS: 0 / 0\nINSIGHTS_SINCE_LAST_UPDATE: 0\n\nQUEUE:\n  - [ ] First sub-problem\n\nINSIGHTS:\n  - (none yet)\n\nLOG:\n  -\n",
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      await refreshFiles();
+      await openSoc(target);
+      setStatus("created " + target);
+    } catch (e) { setStatus("init .soc failed: " + (e.message || e), "err"); }
+  });
+  document.getElementById("btn-new-wit").addEventListener("click", async () => {
+    if (!WORKTREE) return;
+    const name = (prompt("New theorem name?", "theorem_name") || "").trim();
+    if (!name) return;
+    try {
+      const target = WORKTREE + "/" + name + ".wit";
+      const body = "-- Status: UNVERIFIED\n-- Author: " + (navigator.userAgent.includes("Mac") ? "you" : "you") + "\n-- Created: " + new Date().toISOString().slice(0, 10) + "\n\nMODULE " + name + "\n\nTHEOREM " + name + ":\n  GIVEN:\n    -- Hypotheses go here.\n  CLAIM:\n    -- The claim, as a single statement.\n\nPROOF OF " + name + ":\n  [1] HAVE -- first established fact\n      BY -- citation or \"definition\", \"algebra\", etc.\n\n  [2] SHOW -- the theorem's claim\n      BY [1].\n\n  QED BY [2].\n";
+      const r = await fetch("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(target), {
+        method: "PUT", body,
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      await refreshFiles();
+      await openWit(target);
+      setStatus("created " + target);
+    } catch (e) { setStatus("new .wit failed: " + (e.message || e), "err"); }
+  });
+
+  /* ─── Iframe commands ──────────────────────────────────────────────── */
+  os.events.on("iframe-command", (params) => {
+    if (!params || !params.command) return;
+    const args = params.args || [];
+    const cmd = params.command;
+    if (cmd === "open" && args[0]) {
+      const abs = args[0].startsWith("/") ? args[0] : (WORKTREE ? WORKTREE + "/" + args[0] : args[0]);
+      if (abs.endsWith(".soc")) openSoc(abs);
+      else openWit(abs);
+    }
+    else if (cmd === "check")        runCheck();
+    else if (cmd === "verify")       runVerify(args[0] || null);
+    else if (cmd === "context")      runContext();
+    else if (cmd === "save-receipt") saveReceipt();
+    else if (cmd === "tab" && args[0]) {
+      if (args[0] === "soc") {
+        uncollapseCard("card-memory");
+        collapseCard("card-tree");
+      } else {
+        uncollapseCard("card-tree");
+        collapseCard("card-memory");
+      }
+    }
+    else if (cmd === "focus" && args[0] && LAST_PARSED) {
+      for (const proof of LAST_PARSED.proofs) {
+        for (const s of proof.steps) {
+          if (s.label === args[0]) { selectStep(s); return; }
+        }
+      }
+    }
+  });
+
+  setInterval(refreshFiles, 12000);
+  bootstrap();
+</script>
+</body>
+</html>
+</content>
+</invoke>
