@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+target="${1:-$PWD}"
+[[ -e "$target" ]] || { echo "[witsoc] path not found: $target" >&2; exit 2; }
+
+cwd="$target"
+[[ -d "$cwd" ]] || cwd="$(dirname "$cwd")"
+while [[ "$cwd" != "/" ]]; do
+  if [[ -f "$cwd/lakefile.lean" || -f "$cwd/lakefile.toml" ]]; then
+    cd "$cwd"
+    exec lake build
+  fi
+  cwd="$(dirname "$cwd")"
+done
+
+echo "[witsoc] no lakefile.lean or lakefile.toml found above: $target" >&2
+exit 2

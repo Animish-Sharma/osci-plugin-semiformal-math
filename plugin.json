@@ -2,7 +2,7 @@
   "id": "witsoc",
   "version": "0.1.0",
   "displayName": "Witsoc: Semiformal Math",
-  "description": "Structured semiformal proof system. Author .wit proofs, check structure, build LLM-ready verification contexts, persist receipts. Includes Soc working-memory queue.",
+  "description": "Structured semiformal proof system. Author .wit proofs, inspect .lean files, run Lake builds in the current worktree, check structure, build LLM-ready verification contexts, and persist receipts.",
   "publisher": "openscientist",
   "engines": { "openscientist": "^0.1.0" },
   "activationEvents": [
@@ -14,15 +14,17 @@
     "theme.subscribe",
     "plugin.info",
     "workspace.list",
-    "workspace.read"
+    "workspace.read",
+    "workspace.write"
   ],
   "contributes": {
     "bin": [
-      { "id": "wit-list",    "command": "bin/wit-list",    "description": "List .wit files in the worktree" },
+      { "id": "wit-list",    "command": "bin/wit-list",    "description": "List .wit and .lean files in the worktree" },
       { "id": "wit-check",   "command": "bin/wit-check",   "description": "Run `wit check` on a file" },
       { "id": "wit-verify",  "command": "bin/wit-verify",  "description": "Run `wit verify` on a file (optional --step N.M)" },
       { "id": "wit-receipt", "command": "bin/wit-receipt", "description": "Read verifier output from stdin and save .receipt.json" },
-      { "id": "wit-new",     "command": "bin/wit-new",     "description": "Create a new .wit skeleton" }
+      { "id": "wit-new",     "command": "bin/wit-new",     "description": "Create a new .wit skeleton" },
+      { "id": "lake-build",  "command": "bin/lake-build", "description": "Run `lake build` from the nearest Lake project for a .lean file" }
     ],
     "server": {
       "command": ["bin/start-server"],
@@ -35,14 +37,15 @@
       "title": "Witsoc",
       "panel": "side",
       "iframe_commands": [
-        { "name": "open",         "args": "<file.wit>",                                "description": "Load a .wit file in the source view" },
+        { "name": "open",         "args": "<file.wit|file.lean>",                      "description": "Load a .wit file or open a .lean file in the Lean panel" },
         { "name": "check",                                                             "description": "Run wit check on the current file" },
         { "name": "verify",       "args": "[step]",                                    "description": "Run wit verify; with no arg verifies all steps, or pass a label like 3.1" },
         { "name": "context",      "args": "<step>",                                    "description": "Show the isolated verification context for one step" },
         { "name": "focus",        "args": "<step>",                                    "description": "Highlight a step in the proof tree" },
         { "name": "verdict",      "args": "<step> <ACCEPT|REJECT|GAP> <reason>",       "description": "Manually record a verdict" },
         { "name": "save-receipt",                                                      "description": "Persist current verdicts as .wit.receipt.json" },
-        { "name": "tab",          "args": "<proofs|soc>",                              "description": "Switch between Proofs and Soc Memory tabs" }
+        { "name": "lake-build",                                                        "description": "Run `lake build` for the selected Lean file" },
+        { "name": "tab",          "args": "<proofs>",                                  "description": "Switch to the Proofs tab" }
       ]
     }
   }

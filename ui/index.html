@@ -660,6 +660,48 @@
       color: rgb(148 163 184 / 0.62);
     }
 
+    pre.src .str {
+      color: var(--wit-kind);
+    }
+
+    pre.src .num {
+      color: var(--wit-accent);
+    }
+
+    pre.src .op {
+      color: var(--wit-muted-text);
+    }
+
+    pre.src .decl {
+      color: var(--wit-kind);
+      font-weight: 700;
+    }
+
+    pre.src .tactic {
+      color: var(--wit-by);
+      font-weight: 600;
+    }
+
+    pre.src .type {
+      color: var(--wit-accent);
+      font-weight: 600;
+    }
+
+    pre.src .ref {
+      color: var(--wit-label);
+      font-weight: 600;
+    }
+
+    pre.src .binder {
+      color: var(--wit-keyword);
+      font-weight: 600;
+    }
+
+    pre.src .todo {
+      color: var(--wit-reject);
+      font-weight: 700;
+    }
+
     pre.src .ln.hi {
       background: color-mix(in srgb, var(--wit-theme-blue) 10%, transparent);
       border-left: 2px solid var(--wit-theme-blue);
@@ -1722,7 +1764,7 @@
 
       try {
         const session = await os.session.info();
-        WORKTREE = session.worktree || session.folder || null;
+        WORKTREE = session.cwd || session.worktree || session.folder || null;
       } catch { /* keep null */ }
 
       if (!WORKTREE) {
@@ -1735,6 +1777,24 @@
     }
 
     // ─── File listing ─────────────────────────────────────────────────────
+    function withRoot(url) {
+      return url + (url.includes("?") ? "&" : "?") + "root=" + encodeURIComponent(WORKTREE || "");
+    }
+
+    function isInsideWorktree(absPath) {
+      if (!WORKTREE || !absPath) return false;
+      const root = WORKTREE.endsWith("/") ? WORKTREE : WORKTREE + "/";
+      return absPath === WORKTREE || absPath.startsWith(root);
+    }
+
+    function isWitFile(path) {
+      return String(path || "").toLowerCase().endsWith(".wit");
+    }
+
+    function isLeanFile(path) {
+      return String(path || "").toLowerCase().endsWith(".lean");
+    }
+
     async function refreshFiles() {
       if (!WORKTREE) return;
       try {
@@ -1742,8 +1802,8 @@
         if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();
         WIT_FILES = data.wit_files || [];
-        SOC_FILES = data.soc_files || [];
-        if (!LEAN_RUN_TARGET) LEAN_FILES = data.lean_files || [];
+        SOC_FILES = [];
+        LEAN_FILES = data.lean_files || [];
       } catch (e) {
         setStatus("List failed: " + (e.message || e), "err");
         WIT_FILES = []; SOC_FILES = []; LEAN_FILES = [];
@@ -1778,15 +1838,7 @@
     function renderSocList() {
       const el = document.getElementById("soc-files");
       el.innerHTML = "";
-      if (!SOC_FILES.length) { el.innerHTML = '<div class="empty">No .soc files.</div>'; return; }
-      for (const f of SOC_FILES) {
-        const div = document.createElement("div");
-        div.className = "file-item" + (f.path === CURRENT_SOC ? " active" : "");
-        div.title = f.path;
-        div.textContent = f.rel;
-        div.addEventListener("click", () => openSoc(f.path));
-        el.appendChild(div);
-      }
+      el.innerHTML = '<div class="empty">Only .wit and .lean files are recognized.</div>';
     }
     function chooseLeanFile() {
       if (!LEAN_FILES.length) return null;
@@ -1821,17 +1873,8 @@
     }
     async function refreshLeanFiles() {
       if (!WORKTREE) return;
-      const target = (LEAN_RUN_TARGET || "").trim();
       const params = new URLSearchParams();
-      if (!target) {
-        params.set("dir", WORKTREE);
-      } else if (target.startsWith("/")) {
-        params.set("worktree", target);
-      } else if (target.startsWith("orch_")) {
-        params.set("orchestrator", target);
-      } else {
-        params.set("session", target);
-      }
+      params.set("dir", WORKTREE);
       try {
         const r = await fetch("/plugins/witsoc/proxy/api/lean-files?" + params.toString(), { cache: "no-store" });
         const data = await r.json();
@@ -1843,7 +1886,7 @@
           LEAN_DIRTY = false;
         }
         renderLeanList();
-        document.getElementById("lean-live-info").textContent = target ? "deep run" : "current worktree";
+        document.getElementById("lean-live-info").textContent = "current worktree";
       } catch (e) {
         LEAN_FILES = [];
         renderLeanList();
@@ -1853,6 +1896,10 @@
 
     // ─── Open / parse / display .wit ──────────────────────────────────────
     async function openWit(absPath) {
+      if (!isWitFile(absPath) || !isInsideWorktree(absPath)) {
+        setStatus("Open blocked: choose a .wit file inside the current worktree.", "err");
+        return;
+      }
       CURRENT_WIT = absPath;
       SELECTED_STEP = null;
       LAST_VERIFY = null;
@@ -1869,8 +1916,8 @@
     async function refreshCurrentWit() {
       if (!CURRENT_WIT) return;
       const [parsedR, sourceR] = await Promise.all([
-        fetch("/plugins/witsoc/proxy/api/parse?path=" + encodeURIComponent(CURRENT_WIT), { method: "POST", cache: "no-store" }),
-        fetch("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(CURRENT_WIT), { cache: "no-store" }),
+        fetch(withRoot("/plugins/witsoc/proxy/api/parse?path=" + encodeURIComponent(CURRENT_WIT)), { method: "POST", cache: "no-store" }),
+        fetch(withRoot("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(CURRENT_WIT)), { cache: "no-store" }),
       ]);
       if (!parsedR.ok) throw new Error("parse HTTP " + parsedR.status);
       if (!sourceR.ok) throw new Error("file HTTP " + sourceR.status);
@@ -1879,6 +1926,7 @@
       CURRENT_SOURCE = source;
       LAST_PARSED = parsed.parsed;
       LAST_RECEIPT = parsed.receipt;
+      document.getElementById("receipt-info").textContent = parsed.receipt_path ? "sidecar: " + parsed.receipt_path.split("/").slice(-1)[0] : "";
       renderSource(source);
       renderTree();
       renderHeader();
@@ -1898,25 +1946,90 @@
       document.getElementById("chip-steps").innerHTML = "<span>Steps</span><b>" + stepCount + "</b>";
     }
 
-    // ─── Source view (line-numbered, regex-highlighted) ─────────────────
+    // ─── Source view (line-numbered, mode-aware highlighted) ─────────────
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     }
-    function highlightLine(line) {
-      // Comment lines (-- prefix) → muted
-      if (/^\s*--/.test(line)) return '<span class="com">' + escapeHtml(line) + "</span>";
-      let out = escapeHtml(line);
-      // Step labels [N] / [N.M]
+
+    function span(cls, text) {
+      return '<span class="' + cls + '">' + escapeHtml(text) + "</span>";
+    }
+
+    function markTodos(text) {
+      return escapeHtml(text).replace(/\b(TODO|FIXME|sorry|admit|GAP)\b/g, '<span class="todo">$1</span>');
+    }
+
+    function findOutsideString(text, token, start = 0) {
+      let quote = null;
+      for (let i = start; i <= text.length - token.length; i++) {
+        const ch = text[i];
+        if (quote) {
+          if (ch === "\\" && i + 1 < text.length) { i++; continue; }
+          if (ch === quote) quote = null;
+          continue;
+        }
+        if (ch === '"' || ch === "'") {
+          quote = ch;
+          continue;
+        }
+        if (text.startsWith(token, i)) return i;
+      }
+      return -1;
+    }
+
+    function splitComment(line, marker) {
+      const idx = findOutsideString(line, marker);
+      if (idx < 0) return [line, ""];
+      return [line.slice(0, idx), line.slice(idx)];
+    }
+
+    function protectStrings(code) {
+      const parts = [];
+      let out = "";
+      let i = 0;
+      while (i < code.length) {
+        const ch = code[i];
+        if (ch !== '"' && ch !== "'") {
+          out += ch;
+          i++;
+          continue;
+        }
+        const quote = ch;
+        let j = i + 1;
+        while (j < code.length) {
+          if (code[j] === "\\" && j + 1 < code.length) { j += 2; continue; }
+          if (code[j] === quote) { j++; break; }
+          j++;
+        }
+        const key = "\u0000" + parts.length + "\u0000";
+        parts.push(span("str", code.slice(i, j)));
+        out += key;
+        i = j;
+      }
+      return { code: out, parts };
+    }
+
+    function restoreStrings(html, parts) {
+      return html.replace(/\u0000(\d+)\u0000/g, (_, n) => parts[Number(n)] || "");
+    }
+
+    function highlightWitCode(code) {
+      const protectedText = protectStrings(code);
+      let out = escapeHtml(protectedText.code);
       out = out.replace(/\[(\d+(?:\.\d+)*)\]/g, '<span class="lbl">[$1]</span>');
-      // Top-level claim kinds
-      out = out.replace(/\b(MODULE|THEOREM|LEMMA|PROPOSITION|COROLLARY|CONJECTURE|ALGORITHM|REDUCTION|DEFINE|PROOF\s+OF|GIVEN|CLAIM|IMPORT|EXPORT)\b/g,
-        '<span class="kind">$1</span>');
-      // Step keywords
-      out = out.replace(/\b(HAVE|SHOW|ASSUME|LET|CONSIDER|SUFFICES|CASE|CITE|GAP|QED)\b/g,
-        '<span class="kw">$1</span>');
-      // BY ...
+      out = out.replace(/\b(MODULE|IMPORT|EXPORT|DEFINE|THEOREM|LEMMA|PROPOSITION|COROLLARY|CONJECTURE|ALGORITHM|REDUCTION|GIVEN|CLAIM|PROOF\s+OF|QED)\b/g, '<span class="decl">$1</span>');
+      out = out.replace(/\b(HAVE|SHOW|ASSUME|LET|CONSIDER|SUFFICES|CASE|CITE|GAP)\b/g, '<span class="kw">$1</span>');
       out = out.replace(/\b(BY)\b/g, '<span class="by">BY</span>');
-      return out;
+      out = out.replace(/\b(FROM|TO|PRESERVING|WHERE|FOR|EXISTS|FORALL|AND|OR|NOT|IFF|IMPLIES)\b/g, '<span class="binder">$1</span>');
+      out = out.replace(/\b(Step|Lemma|Theorem|Corollary|Proposition)\s+(\d+(?:\.\d+)*)\b/g, '<span class="ref">$1 $2</span>');
+      out = out.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>');
+      out = out.replace(/\b(TODO|FIXME|GAP|sorry|admit)\b/g, '<span class="todo">$1</span>');
+      return restoreStrings(out, protectedText.parts);
+    }
+
+    function highlightLine(line) {
+      const [code, comment] = splitComment(line, "--");
+      return highlightWitCode(code) + (comment ? '<span class="com">' + markTodos(comment) + "</span>" : "");
     }
     function displaySourceLine(line) {
       const status = LAST_VERIFY && LAST_VERIFY.status;
@@ -2324,9 +2437,14 @@
         renderLeanList();
         return;
       }
+      if (!isLeanFile(absPath) || !isInsideWorktree(absPath)) {
+        setLeanOutput("Open blocked: choose a .lean file inside the current worktree.", "err");
+        if (!silent) setStatus("Lean open blocked: file must be inside the current worktree.", "err");
+        return;
+      }
       if (preserveDirty && LEAN_DIRTY && absPath === CURRENT_LEAN) return;
       try {
-        const r = await fetch("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(absPath), { cache: "no-store" });
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(absPath)), { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const src = await r.text();
         const changed = src !== LEAN_SOURCE;
@@ -2346,9 +2464,13 @@
 
     async function saveLean() {
       if (!CURRENT_LEAN) return;
+      if (!isLeanFile(CURRENT_LEAN) || !isInsideWorktree(CURRENT_LEAN)) {
+        setStatus("Lean save blocked: file must be inside the current worktree.", "err");
+        return;
+      }
       const body = document.getElementById("lean-editor").value;
       try {
-        const r = await fetch("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(CURRENT_LEAN), {
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(CURRENT_LEAN)), {
           method: "PUT",
           body,
         });
@@ -2367,18 +2489,26 @@
         setLeanOutput("No Lean file selected.", "err");
         return;
       }
+      if (!isLeanFile(CURRENT_LEAN) || !isInsideWorktree(CURRENT_LEAN)) {
+        setLeanOutput("lake build blocked: choose a .lean file inside the current worktree.", "err");
+        setStatus("lake build blocked: file must be inside the current worktree.", "err");
+        return;
+      }
       if (LEAN_DIRTY) await saveLean();
       setStatus("lake build…", "pending");
       setLeanOutput("Running lake build…");
       try {
-        const r = await fetch("/plugins/witsoc/proxy/api/lake-build?path=" + encodeURIComponent(CURRENT_LEAN), { method: "POST" });
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/lake-build?path=" + encodeURIComponent(CURRENT_LEAN)), { method: "POST" });
         const data = await r.json();
         const output = [
-          "cwd: " + (data.cwd || "—"),
+          "project: " + (data.project_root || data.cwd || "—"),
+          "command: " + (data.command || "lake build"),
           "exit: " + data.exit_code + (data.timed_out ? " (timed out)" : ""),
+          data.searched_dirs && data.searched_dirs.length ? "searched: " + data.searched_dirs.join(" -> ") : "",
           "",
           (data.stdout || "").trim(),
           (data.stderr || "").trim(),
+          data.message || "",
         ].filter(Boolean).join("\n");
         setLeanOutput(output || "lake build completed with no output.", data.exit_code === 0 ? "ok" : "err");
         setStatus("lake build exit=" + data.exit_code, data.exit_code === 0 ? "ok" : "err");
@@ -2707,7 +2837,7 @@
       if (!CURRENT_WIT) return;
       setStatus("wit check…", "pending");
       try {
-        const r = await fetch("/plugins/witsoc/proxy/api/check?path=" + encodeURIComponent(CURRENT_WIT), { method: "POST" });
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/check?path=" + encodeURIComponent(CURRENT_WIT)), { method: "POST" });
         const data = await r.json();
         const tail = (data.stdout + "\n" + data.stderr).trim().split("\n").slice(-2).join(" · ");
         setStatus("check exit=" + data.exit_code + (tail ? "  " + tail : ""), data.exit_code === 0 ? "ok" : "err");
@@ -2720,7 +2850,7 @@
       try {
         let url = "/plugins/witsoc/proxy/api/verify?path=" + encodeURIComponent(CURRENT_WIT);
         if (step) url += "&step=" + encodeURIComponent(step);
-        const r = await fetch(url, { method: "POST" });
+        const r = await fetch(withRoot(url), { method: "POST" });
         const data = await r.json();
         const ta = document.getElementById("verdict-input");
         // Pre-populate the textarea with the contexts so the user can show
@@ -2750,7 +2880,9 @@
       setTerminalCollapsed(false);
       setStatus("wit context…", "pending");
       try {
-        const r = await fetch("/plugins/witsoc/proxy/api/context?path=" + encodeURIComponent(CURRENT_WIT), { method: "POST" });
+        let url = "/plugins/witsoc/proxy/api/context?path=" + encodeURIComponent(CURRENT_WIT);
+        if (SELECTED_STEP) url += "&step=" + encodeURIComponent(SELECTED_STEP);
+        const r = await fetch(withRoot(url), { method: "POST" });
         const data = await r.json();
         const ta = document.getElementById("verdict-input");
         ta.value = data.stdout || "";
@@ -2763,7 +2895,7 @@
       if (!body.trim()) { setStatus("nothing to save", "err"); return; }
       setStatus("wit receipt…", "pending");
       try {
-        const r = await fetch("/plugins/witsoc/proxy/api/receipt?path=" + encodeURIComponent(CURRENT_WIT), {
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/receipt?path=" + encodeURIComponent(CURRENT_WIT)), {
           method: "POST", body,
         });
         const data = await r.json();
@@ -2779,16 +2911,10 @@
 
     // ─── Soc tab ──────────────────────────────────────────────────────────
     async function openSoc(absPath) {
-      CURRENT_SOC = absPath;
-      setStatus("Loading .soc…", "pending");
-      try {
-        const r = await fetch("/plugins/witsoc/proxy/api/soc?path=" + encodeURIComponent(absPath));
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const data = await r.json();
-        renderSoc(data.parsed);
-        renderSocList();
-        setStatus("Loaded " + absPath.split("/").slice(-1)[0]);
-      } catch (e) { setStatus("Open .soc failed: " + (e.message || e), "err"); }
+      CURRENT_SOC = null;
+      renderSoc({ goal: "", progress_a: null, progress_b: null, insights_since: null, queue: [], insights: [], log: [] });
+      renderSocList();
+      setStatus("Only .wit and .lean files are recognized in this worktree.", "err");
     }
 
     function renderSoc(s) {
@@ -2936,29 +3062,22 @@
     document.getElementById("btn-save-receipt").addEventListener("click", saveReceipt);
     document.getElementById("btn-soc-refresh").addEventListener("click", refreshFiles);
     document.getElementById("btn-soc-init").addEventListener("click", async () => {
-      if (!WORKTREE) return;
-      try {
-        const target = WORKTREE + "/research.soc";
-        const r = await fetch("/plugins/witsoc/proxy/api/soc?path=" + encodeURIComponent(target), {
-          method: "POST",
-          body: "# Soc Working Memory\n\nGOAL: <one-line statement>\n\nPROGRESS: 0 / 0\nINSIGHTS_SINCE_LAST_UPDATE: 0\n\nQUEUE:\n  - [ ] First sub-problem\n\nINSIGHTS:\n  - (none yet)\n\nLOG:\n  -\n",
-        });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        await refreshFiles();
-        await openSoc(target);
-        setStatus("created " + target);
-      } catch (e) { setStatus("init .soc failed: " + (e.message || e), "err"); }
+      setStatus("Soc files are disabled; Witsoc now recognizes only .wit and .lean files.", "err");
     });
 
     // Iframe commands
-    os.events.on("iframe-command", (params) => {
+    os.events.on("iframe-command", async (params) => {
       if (!params || !params.command) return;
       const args = params.args || [];
       const cmd = params.command;
       if (cmd === "open" && args[0]) {
         const abs = args[0].startsWith("/") ? args[0] : (WORKTREE ? WORKTREE + "/" + args[0] : args[0]);
-        if (abs.endsWith(".soc")) { setTab("soc"); openSoc(abs); }
-        else { setTab("proofs"); openWit(abs); }
+        if (isWitFile(abs)) { setTab("proofs"); await openWit(abs); }
+        else if (isLeanFile(abs)) {
+          if (!LEAN_PREVIEWING) await openLeanPreview();
+          await openLean(abs);
+        }
+        else { setStatus("Open blocked: only .wit and .lean files are recognized.", "err"); }
       }
       else if (cmd === "check") runCheck();
       else if (cmd === "verify") runVerify(args[0] || null);
@@ -2974,7 +3093,10 @@
       }
       else if (cmd === "lake-build") runLakeBuild();
       else if (cmd === "save-receipt") saveReceipt();
-      else if (cmd === "tab" && args[0]) setTab(args[0] === "soc" ? "soc" : "proofs");
+      else if (cmd === "tab" && args[0]) {
+        if (args[0] === "soc") setStatus("Soc tab is disabled; only .wit and .lean files are recognized.", "err");
+        setTab("proofs");
+      }
       else if (cmd === "focus" && args[0] && LAST_PARSED) {
         for (const proof of LAST_PARSED.proofs) {
           for (const s of proof.steps) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # `plugins bash witsoc <subcommand>` dispatcher. Each subcommand wraps a
-# witsoc CLI verb, plus a few helpers for the soc working-memory format.
+# witsoc CLI verb or a current-worktree Lean helper.
 
 set -euo pipefail
 
@@ -34,34 +34,20 @@ case "$cmd" in
   verify)    ensure_venv; exec "$WIT" verify "$@";;
   context)   ensure_venv; exec "$WIT" context "$@";;
   receipt)   ensure_venv; exec "$WIT" receipt "$@";;
-
-  # ─── Soc working memory helpers ────────────────────────────────────
-  soc-init)
-    target="${1:-${KIMI_WORK_DIR:-$PWD}/research.soc}"
-    if [[ -e "$target" ]]; then echo "[witsoc] already exists: $target" >&2; exit 1; fi
-    cat > "$target" <<'EOF'
-# Soc Working Memory
-
-GOAL: <one-line statement of the overall goal>
-
-PROGRESS: 0 / 0
-INSIGHTS_SINCE_LAST_UPDATE: 0
-
-QUEUE:
-  - [ ] First sub-problem to attack
-
-INSIGHTS:
-  - (none yet)
-
-LOG:
-  -
-EOF
-    echo "$target"
-    ;;
-  soc-show)
-    target="${1:-${KIMI_WORK_DIR:-$PWD}/research.soc}"
-    [[ -f "$target" ]] || { echo "[witsoc] no .soc file at $target" >&2; exit 2; }
-    cat "$target"
+  lake-build)
+    target="${1:-$PWD}"
+    [[ -e "$target" ]] || { echo "[witsoc] path not found: $target" >&2; exit 2; }
+    cwd="$target"
+    [[ -d "$cwd" ]] || cwd="$(dirname "$cwd")"
+    while [[ "$cwd" != "/" ]]; do
+      if [[ -f "$cwd/lakefile.lean" || -f "$cwd/lakefile.toml" ]]; then
+        cd "$cwd"
+        exec lake build
+      fi
+      cwd="$(dirname "$cwd")"
+    done
+    echo "[witsoc] no lakefile.lean or lakefile.toml found above: $target" >&2
+    exit 2
     ;;
 
   help|--help|-h|"")
@@ -70,7 +56,7 @@ plugins bash witsoc <subcommand> [args]
 
 Read-only / informational
   info                              venv path + wit version
-  list [dir]                        find .wit files (default $KIMI_WORK_DIR)
+  list [dir]                        find .wit and .lean files (default $KIMI_WORK_DIR)
   status <file.wit>                 read the "-- Status:" header
 
 Authoring
@@ -81,10 +67,7 @@ Wit pipeline (the prover-verifier loop)
   verify <file.wit> [--step N.M]    build LLM-ready verification contexts
   context <file.wit>                debug: dump exactly what verifier sees
   receipt <file.wit>                read verifier verdicts from stdin → .receipt.json
-
-Soc working memory
-  soc-init [path]                   scaffold a fresh .soc file
-  soc-show [path]                   print the .soc file
+  lake-build <file.lean|dir>         run lake build in the nearest Lake project
 
   help                              this message
 
