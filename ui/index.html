@@ -1680,6 +1680,9 @@
 
     // ─── State ────────────────────────────────────────────────────────────
     let WORKTREE = null;
+    let WORKTREE_ROOTS = [];
+    let SESSION_ID = null;
+    let ORCHESTRATOR_ID = null;
     let WIT_FILES = [];
     let SOC_FILES = [];
     let CURRENT_WIT = null;       // absolute path of selected .wit
@@ -1765,10 +1768,13 @@
       try {
         const session = await os.session.info();
         WORKTREE = session.cwd || session.worktree || session.folder || null;
+        SESSION_ID = session.id || session.session_id || session.sessionId || null;
+        ORCHESTRATOR_ID = session.orchestrator_id || session.orchestratorId || session.orchestrator || null;
+        WORKTREE_ROOTS = uniquePaths([session.cwd, session.worktree, session.folder, WORKTREE]);
       } catch { /* keep null */ }
 
-      if (!WORKTREE) {
-        setStatus("No worktree available.", "err");
+      if (!WORKTREE_ROOTS.length) {
+        setStatus("No session worktree available.", "err");
         return;
       }
 
@@ -1777,14 +1783,46 @@
     }
 
     // ─── File listing ─────────────────────────────────────────────────────
-    function withRoot(url) {
-      return url + (url.includes("?") ? "&" : "?") + "root=" + encodeURIComponent(WORKTREE || "");
+    function uniquePaths(paths) {
+      const out = [];
+      for (const p of paths) {
+        if (!p || out.includes(p)) continue;
+        out.push(p);
+      }
+      return out;
     }
 
-    function isInsideWorktree(absPath) {
-      if (!WORKTREE || !absPath) return false;
-      const root = WORKTREE.endsWith("/") ? WORKTREE : WORKTREE + "/";
-      return absPath === WORKTREE || absPath.startsWith(root);
+    function appendSessionRoots(params) {
+      for (const root of WORKTREE_ROOTS) params.append("dir", root);
+      if (WORKTREE) params.set("cwd", WORKTREE);
+      if (SESSION_ID) params.set("session", SESSION_ID);
+      if (ORCHESTRATOR_ID) params.set("orchestrator", ORCHESTRATOR_ID);
+      return params;
+    }
+
+    function rootForPath(absPath) {
+      const allFiles = WIT_FILES.concat(LEAN_FILES);
+      const found = allFiles.find((f) => f.path === absPath && f.root);
+      if (found) return found.root;
+      const roots = WORKTREE_ROOTS
+        .filter((root) => {
+          const prefix = root.endsWith("/") ? root : root + "/";
+          return absPath === root || absPath.startsWith(prefix);
+        })
+        .sort((a, b) => b.length - a.length);
+      return roots[0] || WORKTREE || "";
+    }
+
+    function withRoot(url, absPath = null) {
+      return url + (url.includes("?") ? "&" : "?") + "root=" + encodeURIComponent(rootForPath(absPath || CURRENT_WIT || CURRENT_LEAN || ""));
+    }
+
+    function isInsideSessionRoots(absPath) {
+      if (!WORKTREE_ROOTS.length || !absPath) return false;
+      return WORKTREE_ROOTS.some((root) => {
+        const prefix = root.endsWith("/") ? root : root + "/";
+        return absPath === root || absPath.startsWith(prefix);
+      });
     }
 
     function isWitFile(path) {
@@ -1795,14 +1833,26 @@
       return String(path || "").toLowerCase().endsWith(".lean");
     }
 
+    function isSocFile(path) {
+      return String(path || "").toLowerCase().endsWith(".soc");
+    }
+
     async function refreshFiles() {
-      if (!WORKTREE) return;
+      if (!WORKTREE_ROOTS.length) return;
       try {
-        const r = await fetch("/plugins/witsoc/proxy/api/list?dir=" + encodeURIComponent(WORKTREE), { cache: "no-store" });
+        const params = appendSessionRoots(new URLSearchParams());
+        const r = await fetch("/plugins/witsoc/proxy/api/list?" + params.toString(), { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const data = await r.json();
+        WORKTREE_ROOTS = uniquePaths((data.roots || []).map((root) => root.path).concat(WORKTREE_ROOTS));
         WIT_FILES = data.wit_files || [];
-        SOC_FILES = [];
+        SOC_FILES = WORKTREE_ROOTS.map((root) => ({
+          path: root + "/research.soc",
+          name: "research.soc",
+          rel: "research.soc",
+          root,
+          root_label: root === WORKTREE ? "current cwd" : "session worktree",
+        }));
         LEAN_FILES = data.lean_files || [];
       } catch (e) {
         setStatus("List failed: " + (e.message || e), "err");
@@ -1828,7 +1878,7 @@
       for (const f of WIT_FILES) {
         const opt = document.createElement("option");
         opt.value = f.path;
-        opt.textContent = f.rel;
+        opt.textContent = (f.root_label ? f.root_label + " · " : "") + f.rel;
         opt.title = f.path;
         opt.selected = f.path === previous;
         select.appendChild(opt);
@@ -1838,7 +1888,15 @@
     function renderSocList() {
       const el = document.getElementById("soc-files");
       el.innerHTML = "";
-      el.innerHTML = '<div class="empty">Only .wit and .lean files are recognized.</div>';
+      if (!SOC_FILES.length) { el.innerHTML = '<div class="empty">No Soc memory roots.</div>'; return; }
+      for (const f of SOC_FILES) {
+        const div = document.createElement("div");
+        div.className = "file-item" + (f.path === CURRENT_SOC ? " active" : "");
+        div.title = f.path;
+        div.textContent = (f.root_label ? f.root_label + " · " : "") + f.rel;
+        div.addEventListener("click", () => openSoc(f.path));
+        el.appendChild(div);
+      }
     }
     function chooseLeanFile() {
       if (!LEAN_FILES.length) return null;
@@ -1872,13 +1930,13 @@
       }
     }
     async function refreshLeanFiles() {
-      if (!WORKTREE) return;
-      const params = new URLSearchParams();
-      params.set("dir", WORKTREE);
+      if (!WORKTREE_ROOTS.length) return;
+      const params = appendSessionRoots(new URLSearchParams());
       try {
         const r = await fetch("/plugins/witsoc/proxy/api/lean-files?" + params.toString(), { cache: "no-store" });
         const data = await r.json();
         if (!r.ok || data.error) throw new Error(data.message || data.error || ("HTTP " + r.status));
+        WORKTREE_ROOTS = uniquePaths((data.roots || []).map((root) => root.path).concat(WORKTREE_ROOTS));
         LEAN_FILES = data.lean_files || [];
         if (CURRENT_LEAN && !LEAN_FILES.some((f) => f.path === CURRENT_LEAN)) {
           CURRENT_LEAN = null;
@@ -1886,7 +1944,7 @@
           LEAN_DIRTY = false;
         }
         renderLeanList();
-        document.getElementById("lean-live-info").textContent = "current worktree";
+        document.getElementById("lean-live-info").textContent = "session files";
       } catch (e) {
         LEAN_FILES = [];
         renderLeanList();
@@ -1896,8 +1954,8 @@
 
     // ─── Open / parse / display .wit ──────────────────────────────────────
     async function openWit(absPath) {
-      if (!isWitFile(absPath) || !isInsideWorktree(absPath)) {
-        setStatus("Open blocked: choose a .wit file inside the current worktree.", "err");
+      if (!isWitFile(absPath) || !isInsideSessionRoots(absPath)) {
+        setStatus("Open blocked: choose a .wit file generated in this session.", "err");
         return;
       }
       CURRENT_WIT = absPath;
@@ -1916,8 +1974,8 @@
     async function refreshCurrentWit() {
       if (!CURRENT_WIT) return;
       const [parsedR, sourceR] = await Promise.all([
-        fetch(withRoot("/plugins/witsoc/proxy/api/parse?path=" + encodeURIComponent(CURRENT_WIT)), { method: "POST", cache: "no-store" }),
-        fetch(withRoot("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(CURRENT_WIT)), { cache: "no-store" }),
+        fetch(withRoot("/plugins/witsoc/proxy/api/parse?path=" + encodeURIComponent(CURRENT_WIT), CURRENT_WIT), { method: "POST", cache: "no-store" }),
+        fetch(withRoot("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(CURRENT_WIT), CURRENT_WIT), { cache: "no-store" }),
       ]);
       if (!parsedR.ok) throw new Error("parse HTTP " + parsedR.status);
       if (!sourceR.ok) throw new Error("file HTTP " + sourceR.status);
@@ -2437,14 +2495,14 @@
         renderLeanList();
         return;
       }
-      if (!isLeanFile(absPath) || !isInsideWorktree(absPath)) {
-        setLeanOutput("Open blocked: choose a .lean file inside the current worktree.", "err");
-        if (!silent) setStatus("Lean open blocked: file must be inside the current worktree.", "err");
+      if (!isLeanFile(absPath) || !isInsideSessionRoots(absPath)) {
+        setLeanOutput("Open blocked: choose a .lean file generated in this session.", "err");
+        if (!silent) setStatus("Lean open blocked: file must be generated in this session.", "err");
         return;
       }
       if (preserveDirty && LEAN_DIRTY && absPath === CURRENT_LEAN) return;
       try {
-        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(absPath)), { cache: "no-store" });
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(absPath), absPath), { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         const src = await r.text();
         const changed = src !== LEAN_SOURCE;
@@ -2464,13 +2522,13 @@
 
     async function saveLean() {
       if (!CURRENT_LEAN) return;
-      if (!isLeanFile(CURRENT_LEAN) || !isInsideWorktree(CURRENT_LEAN)) {
-        setStatus("Lean save blocked: file must be inside the current worktree.", "err");
+      if (!isLeanFile(CURRENT_LEAN) || !isInsideSessionRoots(CURRENT_LEAN)) {
+        setStatus("Lean save blocked: file must be generated in this session.", "err");
         return;
       }
       const body = document.getElementById("lean-editor").value;
       try {
-        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(CURRENT_LEAN)), {
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/file?path=" + encodeURIComponent(CURRENT_LEAN), CURRENT_LEAN), {
           method: "PUT",
           body,
         });
@@ -2489,20 +2547,22 @@
         setLeanOutput("No Lean file selected.", "err");
         return;
       }
-      if (!isLeanFile(CURRENT_LEAN) || !isInsideWorktree(CURRENT_LEAN)) {
-        setLeanOutput("lake build blocked: choose a .lean file inside the current worktree.", "err");
-        setStatus("lake build blocked: file must be inside the current worktree.", "err");
+      if (!isLeanFile(CURRENT_LEAN) || !isInsideSessionRoots(CURRENT_LEAN)) {
+        setLeanOutput("lake build blocked: choose a .lean file generated in this session.", "err");
+        setStatus("lake build blocked: file must be generated in this session.", "err");
         return;
       }
       if (LEAN_DIRTY) await saveLean();
       setStatus("lake build…", "pending");
       setLeanOutput("Running lake build…");
       try {
-        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/lake-build?path=" + encodeURIComponent(CURRENT_LEAN)), { method: "POST" });
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/lake-build?path=" + encodeURIComponent(CURRENT_LEAN), CURRENT_LEAN), { method: "POST" });
         const data = await r.json();
         const output = [
           "project: " + (data.project_root || data.cwd || "—"),
           "command: " + (data.command || "lake build"),
+          "runner: " + (data.runner || (data.sandbox_fallback_used ? "sandbox" : "local")),
+          data.sandbox_fallback_used ? "fallback: local Lake tooling unavailable; used sandbox" : "",
           "exit: " + data.exit_code + (data.timed_out ? " (timed out)" : ""),
           data.searched_dirs && data.searched_dirs.length ? "searched: " + data.searched_dirs.join(" -> ") : "",
           "",
@@ -2837,7 +2897,7 @@
       if (!CURRENT_WIT) return;
       setStatus("wit check…", "pending");
       try {
-        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/check?path=" + encodeURIComponent(CURRENT_WIT)), { method: "POST" });
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/check?path=" + encodeURIComponent(CURRENT_WIT), CURRENT_WIT), { method: "POST" });
         const data = await r.json();
         const tail = (data.stdout + "\n" + data.stderr).trim().split("\n").slice(-2).join(" · ");
         setStatus("check exit=" + data.exit_code + (tail ? "  " + tail : ""), data.exit_code === 0 ? "ok" : "err");
@@ -2850,7 +2910,7 @@
       try {
         let url = "/plugins/witsoc/proxy/api/verify?path=" + encodeURIComponent(CURRENT_WIT);
         if (step) url += "&step=" + encodeURIComponent(step);
-        const r = await fetch(withRoot(url), { method: "POST" });
+        const r = await fetch(withRoot(url, CURRENT_WIT), { method: "POST" });
         const data = await r.json();
         const ta = document.getElementById("verdict-input");
         // Pre-populate the textarea with the contexts so the user can show
@@ -2882,7 +2942,7 @@
       try {
         let url = "/plugins/witsoc/proxy/api/context?path=" + encodeURIComponent(CURRENT_WIT);
         if (SELECTED_STEP) url += "&step=" + encodeURIComponent(SELECTED_STEP);
-        const r = await fetch(withRoot(url), { method: "POST" });
+        const r = await fetch(withRoot(url, CURRENT_WIT), { method: "POST" });
         const data = await r.json();
         const ta = document.getElementById("verdict-input");
         ta.value = data.stdout || "";
@@ -2895,7 +2955,7 @@
       if (!body.trim()) { setStatus("nothing to save", "err"); return; }
       setStatus("wit receipt…", "pending");
       try {
-        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/receipt?path=" + encodeURIComponent(CURRENT_WIT)), {
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/receipt?path=" + encodeURIComponent(CURRENT_WIT), CURRENT_WIT), {
           method: "POST", body,
         });
         const data = await r.json();
@@ -2911,10 +2971,23 @@
 
     // ─── Soc tab ──────────────────────────────────────────────────────────
     async function openSoc(absPath) {
-      CURRENT_SOC = null;
-      renderSoc({ goal: "", progress_a: null, progress_b: null, insights_since: null, queue: [], insights: [], log: [] });
-      renderSocList();
-      setStatus("Only .wit and .lean files are recognized in this worktree.", "err");
+      if (!isSocFile(absPath) || !isInsideSessionRoots(absPath)) {
+        setStatus("Open blocked: choose a Soc memory file generated in this session.", "err");
+        return;
+      }
+      CURRENT_SOC = absPath;
+      setStatus("Loading Soc memory…", "pending");
+      try {
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/soc?path=" + encodeURIComponent(absPath), absPath), { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const data = await r.json();
+        renderSoc(data.parsed);
+        renderSocList();
+        setStatus("Loaded " + absPath.split("/").slice(-1)[0]);
+      } catch (e) {
+        renderSoc({ goal: "", progress_a: null, progress_b: null, insights_since: null, queue: [], insights: [], log: [] });
+        setStatus("Open Soc memory failed: " + (e.message || e), "err");
+      }
     }
 
     function renderSoc(s) {
@@ -3062,7 +3135,22 @@
     document.getElementById("btn-save-receipt").addEventListener("click", saveReceipt);
     document.getElementById("btn-soc-refresh").addEventListener("click", refreshFiles);
     document.getElementById("btn-soc-init").addEventListener("click", async () => {
-      setStatus("Soc files are disabled; Witsoc now recognizes only .wit and .lean files.", "err");
+      if (!WORKTREE) return;
+      const target = WORKTREE + "/research.soc";
+      const body = "# Soc Working Memory\n\nGOAL: <one-line statement>\n\nPROGRESS: 0 / 0\nINSIGHTS_SINCE_LAST_UPDATE: 0\n\nQUEUE:\n  - [ ] First sub-problem\n\nINSIGHTS:\n  - (none yet)\n\nLOG:\n  -\n";
+      try {
+        const r = await fetch(withRoot("/plugins/witsoc/proxy/api/soc?path=" + encodeURIComponent(target), target), {
+          method: "POST",
+          body,
+        });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        await refreshFiles();
+        setTab("soc");
+        await openSoc(target);
+        setStatus("Created Soc memory");
+      } catch (e) {
+        setStatus("Init Soc memory failed: " + (e.message || e), "err");
+      }
     });
 
     // Iframe commands
@@ -3077,7 +3165,8 @@
           if (!LEAN_PREVIEWING) await openLeanPreview();
           await openLean(abs);
         }
-        else { setStatus("Open blocked: only .wit and .lean files are recognized.", "err"); }
+        else if (isSocFile(abs)) { setTab("soc"); await openSoc(abs); }
+        else { setStatus("Open blocked: choose a .wit, .lean, or Soc memory file.", "err"); }
       }
       else if (cmd === "check") runCheck();
       else if (cmd === "verify") runVerify(args[0] || null);
@@ -3093,10 +3182,7 @@
       }
       else if (cmd === "lake-build") runLakeBuild();
       else if (cmd === "save-receipt") saveReceipt();
-      else if (cmd === "tab" && args[0]) {
-        if (args[0] === "soc") setStatus("Soc tab is disabled; only .wit and .lean files are recognized.", "err");
-        setTab("proofs");
-      }
+      else if (cmd === "tab" && args[0]) setTab(args[0] === "soc" ? "soc" : "proofs");
       else if (cmd === "focus" && args[0] && LAST_PARSED) {
         for (const proof of LAST_PARSED.proofs) {
           for (const s of proof.steps) {

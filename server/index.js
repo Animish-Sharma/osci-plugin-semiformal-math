@@ -59,6 +59,7 @@ function runCommand(command, args, opts = {}, stdin = null) {
       resolve({
         ok: !err,
         exit_code: err ? (err.code || 1) : 0,
+        error_code: err ? (err.code || null) : null,
         signal: err ? err.signal || null : null,
         stdout: stdout ? stdout.toString() : "",
         stderr: (stderr ? stderr.toString() : "") || (err && err.message ? err.message : ""),
@@ -73,6 +74,70 @@ function runCommand(command, args, opts = {}, stdin = null) {
 }
 function runWit(args, stdin = null, timeoutMs = 60000, cwd = undefined) {
   return runCommand(WIT, args, { cwd, timeoutMs, maxBuffer: 4 * 1024 * 1024 }, stdin);
+}
+
+function isToolingMissingResult(r) {
+  const text = `${r.error_code || ""}\n${r.stderr || ""}\n${r.stdout || ""}`.toLowerCase();
+  return text.includes("enoent")
+    || text.includes("command not found")
+    || text.includes("lake: not found")
+    || text.includes("lean: not found")
+    || text.includes("no such file or directory");
+}
+
+function planeToolAvailable() {
+  if (!PLANE_TOOL_BIN) return false;
+  return !path.isAbsolute(PLANE_TOOL_BIN) || fs.existsSync(PLANE_TOOL_BIN);
+}
+
+async function runSandboxLakeBuild(projectRoot) {
+  const activate = await runCommand(PLANE_TOOL_BIN, ["skill-run", "sandbox-use/scripts/activate.sh", "math", "--mount", projectRoot], {
+    cwd: projectRoot,
+    timeoutMs: 120000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  if (activate.exit_code !== 0) {
+    return {
+      ...activate,
+      runner: "sandbox",
+      sandbox: "math",
+      phase: "sandbox_activate",
+      command: "lake build",
+    };
+  }
+  let r = await runCommand(PLANE_TOOL_BIN, ["skill-run", "sandbox-use/scripts/exec.sh", "--sandbox", "math", "--", "lake", "build"], {
+    cwd: projectRoot,
+    timeoutMs: 10 * 60 * 1000,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (r.exit_code === 126) {
+    const retryActivate = await runCommand(PLANE_TOOL_BIN, ["skill-run", "sandbox-use/scripts/activate.sh", "math", "--mount", projectRoot], {
+      cwd: projectRoot,
+      timeoutMs: 120000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (retryActivate.exit_code !== 0) {
+      return {
+        ...retryActivate,
+        runner: "sandbox",
+        sandbox: "math",
+        phase: "sandbox_reactivate",
+        command: "lake build",
+      };
+    }
+    r = await runCommand(PLANE_TOOL_BIN, ["skill-run", "sandbox-use/scripts/exec.sh", "--sandbox", "math", "--", "lake", "build"], {
+      cwd: projectRoot,
+      timeoutMs: 10 * 60 * 1000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  }
+  return {
+    ...r,
+    runner: "sandbox",
+    sandbox: "math",
+    phase: "lake_build",
+    command: "lake build",
+  };
 }
 
 function existingPathKind(p) {
@@ -135,6 +200,33 @@ function guardedPath(rawPath, rawRoot) {
 
 function isRecognizedFile(p) {
   return p.toLowerCase().endsWith(".wit") || p.toLowerCase().endsWith(".lean");
+}
+
+function addRoot(roots, seen, p, label = null) {
+  const root = normalizeRoot(p);
+  if (!root || seen.has(root)) return;
+  seen.add(root);
+  roots.push({ path: root, label: label || root });
+}
+
+async function rootsFromQuery(u) {
+  const roots = [];
+  const seen = new Set();
+  for (const dir of u.searchParams.getAll("dir")) addRoot(roots, seen, dir, dir === u.searchParams.get("cwd") ? "current cwd" : "worktree");
+  for (const worktree of u.searchParams.getAll("worktree")) addRoot(roots, seen, worktree, "session worktree");
+  for (const folder of u.searchParams.getAll("folder")) addRoot(roots, seen, folder, "session folder");
+
+  const orchestratorId = u.searchParams.get("orchestrator") || u.searchParams.get("orchestratorId");
+  const sessionId = u.searchParams.get("session") || u.searchParams.get("sessionId");
+  if (orchestratorId || sessionId) {
+    try {
+      const resolved = await resolveDeepRunWorktrees({ orchestratorId, sessionId, worktree: null });
+      for (const root of resolved) addRoot(roots, seen, root.path, root.label);
+    } catch (_) {
+      // Plane lookup is best-effort; local session paths above still work.
+    }
+  }
+  return roots;
 }
 function getJson(url, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
@@ -310,7 +402,7 @@ function listFiles(rootDir, exts, maxDepth = 8, max = 500) {
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const entry of entries) {
       if (out.length >= max) return;
-      if (skip.has(entry.name) || entry.name.startsWith(".")) continue;
+      if (skip.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full, depth + 1);
       else if (entry.isFile() && exts.some((x) => entry.name.toLowerCase().endsWith(x))) {
@@ -386,22 +478,23 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (u.pathname === "/api/list") {
-    const dir = u.searchParams.get("dir");
-    if (!dir) return sendJson(res, 400, { error: "dir_required" });
-    const root = normalizeRoot(dir);
-    if (!root) return sendJson(res, 404, { error: "dir_not_found", dir });
-    const files = listFiles(root, [".wit", ".lean"], 20, 1000);
+    const roots = await rootsFromQuery(u);
+    if (!roots.length) return sendJson(res, 404, { error: "root_not_found" });
+    const files = [];
+    for (const root of roots) {
+      for (const f of listFiles(root.path, [".wit", ".lean"], 20, 1000)) {
+        files.push({ ...f, root: root.path, root_label: root.label });
+      }
+    }
     const wits = files.filter((f) => f.name.toLowerCase().endsWith(".wit"));
     const leans = files.filter((f) => f.name.toLowerCase().endsWith(".lean"));
-    return sendJson(res, 200, { dir: root, files, wit_files: wits, lean_files: leans });
+    return sendJson(res, 200, { roots, dir: roots[0].path, files, wit_files: wits, lean_files: leans });
   }
 
   if (u.pathname === "/api/lean-files") {
-    const dir = u.searchParams.get("dir");
-    const root = normalizeRoot(dir);
-    if (!root) return sendJson(res, 404, { error: "dir_not_found", dir });
+    const roots = await rootsFromQuery(u);
+    if (!roots.length) return sendJson(res, 404, { error: "root_not_found" });
     try {
-      const roots = [{ path: root, label: "current worktree" }];
       const leanFiles = [];
       for (const root of roots) {
         for (const f of listFiles(root.path, [".lean"], 10, 1000)) {
@@ -463,15 +556,25 @@ const server = http.createServer(async (req, res) => {
         lean_toolchain_dirs: lake.leanToolchains,
       });
     }
-    const r = await runCommand("lake", ["build"], {
+    const local = await runCommand("lake", ["build"], {
       cwd: lake.projectRoot,
       timeoutMs: 10 * 60 * 1000,
       maxBuffer: 16 * 1024 * 1024,
     });
+    const canSandboxFallback = !local.ok && isToolingMissingResult(local) && planeToolAvailable();
+    const r = canSandboxFallback ? await runSandboxLakeBuild(lake.projectRoot) : {
+      ...local,
+      runner: "local",
+      command: "lake build",
+      sandbox_fallback_available: planeToolAvailable(),
+      sandbox_fallback_used: false,
+    };
     return sendJson(res, 200, {
       ...r,
       project_root: lake.projectRoot,
-      command: "lake build",
+      command: r.command || "lake build",
+      sandbox_fallback_used: canSandboxFallback,
+      local_lake_result: canSandboxFallback ? local : null,
       searched_dirs: lake.searched,
       lean_toolchain_dirs: lake.leanToolchains,
     });
@@ -534,7 +637,29 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (u.pathname === "/api/soc") {
-    return sendJson(res, 404, { error: "unsupported_file_type", message: "Only .wit and .lean files are recognized." });
+    const guard = guardedPath(u.searchParams.get("path"), u.searchParams.get("root"));
+    if (guard.error) return sendJson(res, 400, guard);
+    const p = guard.path;
+    if (!p.toLowerCase().endsWith(".soc")) return sendJson(res, 400, { error: "soc_file_required", path: p });
+    if (req.method === "GET") {
+      try {
+        const source = fs.readFileSync(p, "utf8");
+        return sendJson(res, 200, { path: p, parsed: parseSocText(source), source });
+      } catch (err) {
+        return sendJson(res, 404, { error: "read_failed", message: err.message });
+      }
+    }
+    if (req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, body);
+        return sendJson(res, 200, { ok: true, bytes: body.length, parsed: parseSocText(body) });
+      } catch (err) {
+        return sendJson(res, 500, { error: "write_failed", message: err.message });
+      }
+    }
+    return sendJson(res, 405, { error: "method_not_allowed" });
   }
 
   sendJson(res, 404, { error: "not_found", path: u.pathname });
