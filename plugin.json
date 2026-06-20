@@ -19,7 +19,7 @@
   ],
   "contributes": {
     "bin": [
-      { "id": "wit-list",    "command": "bin/wit-list",    "description": "List .wit and .lean files in the worktree" },
+      { "id": "wit-list",    "command": "bin/wit-list",    "description": "List .wit, .lean, and .soc files in Witsoc work roots" },
       { "id": "wit-check",   "command": "bin/wit-check",   "description": "Run `wit check` on a file" },
       { "id": "wit-verify",  "command": "bin/wit-verify",  "description": "Run `wit verify` on a file (optional --step N.M)" },
       { "id": "wit-receipt", "command": "bin/wit-receipt", "description": "Read verifier output from stdin and save .receipt.json" },
@@ -37,7 +37,7 @@
       "title": "Witsoc",
       "panel": "side",
       "iframe_commands": [
-        { "name": "open",         "args": "<file.wit|file.lean>",                      "description": "Load a .wit file or open a .lean file in the Lean panel" },
+        { "name": "open",         "args": "<file.wit|file.lean|file.soc>",             "description": "Load a .wit, .lean, or .soc file" },
         { "name": "check",                                                             "description": "Run wit check on the current file" },
         { "name": "verify",       "args": "[step]",                                    "description": "Run wit verify; with no arg verifies all steps, or pass a label like 3.1" },
         { "name": "context",      "args": "<step>",                                    "description": "Show the isolated verification context for one step" },
@@ -45,7 +45,7 @@
         { "name": "verdict",      "args": "<step> <ACCEPT|REJECT|GAP> <reason>",       "description": "Manually record a verdict" },
         { "name": "save-receipt",                                                      "description": "Persist current verdicts as .wit.receipt.json" },
         { "name": "lake-build",                                                        "description": "Run `lake build` for the selected Lean file" },
-        { "name": "tab",          "args": "<proofs>",                                  "description": "Switch to the Proofs tab" }
+        { "name": "tab",          "args": "<proofs|soc|lean>",                         "description": "Switch between plugin tabs" }
       ]
     }
   }

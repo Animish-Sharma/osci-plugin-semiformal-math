@@ -8,7 +8,22 @@ set -euo pipefail
 
 NAME="${1:?Usage: wit-new <name> [dir]}"
 NAME="${NAME%.wit}"
-TARGET_DIR="${2:-${KIMI_WORK_DIR:-$PWD}}"
+
+slug="$(printf "%s" "$NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_+-]+/-/g; s/^-+//; s/-+$//')"
+[[ -n "$slug" ]] || slug="proof"
+session_id="${OSCI_SESSION_ID:-${PLANE_SESSION_ID:-${SESSION_ID:-manual}}}"
+if [[ -n "${WITSOC_PROOF_WORKTREE:-}" ]]; then
+  DEFAULT_DIR="$WITSOC_PROOF_WORKTREE"
+elif [[ -n "${WITSOC_WORKTREES_DIR:-}" ]]; then
+  DEFAULT_DIR="${WITSOC_WORKTREES_DIR%/}/witsoc-proof-${session_id}-${slug}"
+elif [[ -n "${PLANE_SESSION_DIR:-}" ]]; then
+  DEFAULT_DIR="${PLANE_SESSION_DIR%/}/worktrees/witsoc-proof-${session_id}-${slug}"
+elif [[ -n "${KIMI_WORK_DIR:-}" ]]; then
+  DEFAULT_DIR="${KIMI_WORK_DIR%/}/worktrees/witsoc-proof-${session_id}-${slug}"
+else
+  DEFAULT_DIR="$PWD/worktrees/witsoc-proof-${session_id}-${slug}"
+fi
+TARGET_DIR="${2:-$DEFAULT_DIR}"
 TARGET_FILE="${TARGET_DIR%/}/${NAME}.wit"
 
 mkdir -p "$TARGET_DIR"
@@ -40,5 +55,21 @@ PROOF OF ${NAME}:
 
   QED BY [2].
 EOF
+
+REGISTRY_PY="${WITSOC_ARTIFACTS_PY:-}"
+if [[ -z "$REGISTRY_PY" ]]; then
+  for candidate in \
+    "${KIMI_WORK_DIR:-}/strings/skills/witsoc/scripts/artifacts.py" \
+    "$PWD/strings/skills/witsoc/scripts/artifacts.py" \
+    "$PWD/../strings/skills/witsoc/scripts/artifacts.py"; do
+    if [[ -f "$candidate" ]]; then
+      REGISTRY_PY="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -n "$REGISTRY_PY" && -f "$REGISTRY_PY" ]]; then
+  python3 "$REGISTRY_PY" register "$TARGET_FILE" --type wit --owner-phase witsoc-generator --status created >/dev/null 2>&1 || true
+fi
 
 echo "$TARGET_FILE"

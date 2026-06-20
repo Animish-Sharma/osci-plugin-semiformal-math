@@ -19,6 +19,7 @@
 
 const fs = require("fs");
 const http = require("http");
+const os = require("os");
 const path = require("path");
 const { execFile } = require("child_process");
 
@@ -199,7 +200,16 @@ function guardedPath(rawPath, rawRoot) {
 }
 
 function isRecognizedFile(p) {
-  return p.toLowerCase().endsWith(".wit") || p.toLowerCase().endsWith(".lean");
+  const lower = p.toLowerCase();
+  return lower.endsWith(".wit") || lower.endsWith(".lean") || lower.endsWith(".soc");
+}
+
+function fileMtimeMs(p) {
+  try { return fs.statSync(p).mtimeMs; } catch (_) { return 0; }
+}
+
+function isGeneratedArtifactDirName(name) {
+  return name === "harness_output" || name === "artifacts" || name === "runs";
 }
 
 function addRoot(roots, seen, p, label = null) {
@@ -209,22 +219,156 @@ function addRoot(roots, seen, p, label = null) {
   roots.push({ path: root, label: label || root });
 }
 
+function addEnvRoots(roots, seen) {
+  const envPairs = [
+    ["current cwd", process.cwd()],
+    ["KIMI_WORK_DIR", process.env.KIMI_WORK_DIR],
+    ["PLANE_SESSION_DIR", process.env.PLANE_SESSION_DIR],
+    ["OSCI_SESSION_DIR", process.env.OSCI_SESSION_DIR],
+    ["WITSOC_WORKTREES_DIR", process.env.WITSOC_WORKTREES_DIR],
+    ["WITSOC_PROOF_WORKTREE", process.env.WITSOC_PROOF_WORKTREE],
+    ["WITSOC_HARNESS_OUTPUT", process.env.WITSOC_HARNESS_OUTPUT],
+    ["WITSOC_HARNESS_OUTPUT_DIR", process.env.WITSOC_HARNESS_OUTPUT_DIR],
+    ["WITSOC_BENCHMARK_DIR", process.env.WITSOC_BENCHMARK_DIR],
+    ["WITSOC_BENCHMARK_OUTPUT", process.env.WITSOC_BENCHMARK_OUTPUT],
+  ];
+  for (const [label, p] of envPairs) addRoot(roots, seen, p, label);
+
+  for (const base of [process.env.PLANE_SESSION_DIR, process.env.KIMI_WORK_DIR, process.cwd()]) {
+    if (!base) continue;
+    addRoot(roots, seen, path.join(base, "worktrees"), "session worktrees");
+    addRoot(roots, seen, path.join(base, "runs"), "session runs");
+    addRoot(roots, seen, path.join(base, "harness_output"), "harness output");
+  }
+}
+
+function addStandardArtifactRoots(roots, seen) {
+  const home = os.homedir();
+  const candidates = [
+    ["OpenScientist worktrees", path.join(home, ".openscientist", "worktrees")],
+    ["OpenScientist sessions", path.join(home, ".openscientist", "sessions")],
+    ["Plane sessions", path.join(home, ".kimi", "plane", "sessions")],
+    ["Plane worktrees", path.join(home, ".kimi", "plane", "worktrees")],
+    ["OpenScientist skills", path.join(home, ".openscientist", "skills")],
+  ];
+  for (const [label, p] of candidates) addRoot(roots, seen, p, label);
+}
+
+function addGeneratedArtifactRoots(roots, seen) {
+  const baseRoots = [...roots];
+  const skip = new Set(["node_modules", ".git", ".venv", "__pycache__", "dist", "build"]);
+  const maxDepth = 5;
+  const maxDirs = 4000;
+  let visited = 0;
+
+  function walk(dir, depth) {
+    if (depth > maxDepth || visited >= maxDirs) return;
+    visited += 1;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || skip.has(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.name.endsWith(".benchmark")) {
+        addRoot(roots, seen, full, `benchmark ${entry.name}`);
+        addRoot(roots, seen, path.join(full, "artifacts"), `benchmark artifacts ${entry.name}`);
+        addRoot(roots, seen, path.join(full, "logs"), `benchmark logs ${entry.name}`);
+        continue;
+      }
+      if (entry.name === "harness_output") {
+        addRoot(roots, seen, full, "harness output");
+        continue;
+      }
+      if (entry.name === "artifacts" && path.basename(path.dirname(full)).endsWith(".benchmark")) {
+        addRoot(roots, seen, full, `benchmark artifacts ${path.basename(path.dirname(full))}`);
+        continue;
+      }
+      if (isGeneratedArtifactDirName(entry.name) || depth < 2) walk(full, depth + 1);
+    }
+  }
+
+  for (const root of baseRoots) walk(root.path, 0);
+}
+
+function addNearbyProofWorktrees(roots, seen) {
+  const candidates = [];
+  for (const root of roots) {
+    candidates.push(path.join(root.path, "worktrees"));
+    candidates.push(path.join(root.path, "runs"));
+    candidates.push(path.dirname(root.path));
+  }
+  for (const dir of candidates) {
+    const normalized = normalizeRoot(dir);
+    if (!normalized) continue;
+    let entries = [];
+    try { entries = fs.readdirSync(normalized, { withFileTypes: true }); } catch (_) { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (
+        /^witsoc-proof-/i.test(entry.name)
+        || /^wt-/i.test(entry.name)
+        || /witsoc/i.test(entry.name)
+        || /lovasz/i.test(entry.name)
+      ) {
+        addRoot(roots, seen, path.join(normalized, entry.name), `discovered ${entry.name}`);
+      }
+    }
+  }
+}
+
+function addSessionScopedRoots(roots, seen) {
+  const baseRoots = [...roots];
+  for (const root of baseRoots) {
+    const bases = [
+      path.join(root.path, ".openscientist", "worktrees"),
+      path.join(root.path, "worktrees"),
+      path.join(root.path, "runs"),
+      path.join(root.path, "harness_output"),
+      path.join(root.path, ".openscientist", "sessions"),
+    ];
+    for (const base of bases) {
+      const normalized = normalizeRoot(base);
+      if (!normalized) continue;
+      addRoot(roots, seen, normalized, path.relative(root.path, normalized) || "session root");
+      let entries = [];
+      try { entries = fs.readdirSync(normalized, { withFileTypes: true }); } catch (_) { continue; }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        addRoot(roots, seen, path.join(normalized, entry.name), entry.name);
+      }
+    }
+  }
+}
+
 async function rootsFromQuery(u) {
   const roots = [];
   const seen = new Set();
+  const scope = (u.searchParams.get("scope") || "focused").toLowerCase();
+  const sessionScoped = scope === "session";
+  const expanded = scope === "expanded" || scope === "all";
   for (const dir of u.searchParams.getAll("dir")) addRoot(roots, seen, dir, dir === u.searchParams.get("cwd") ? "current cwd" : "worktree");
   for (const worktree of u.searchParams.getAll("worktree")) addRoot(roots, seen, worktree, "session worktree");
   for (const folder of u.searchParams.getAll("folder")) addRoot(roots, seen, folder, "session folder");
+  for (const root of u.searchParams.getAll("root")) addRoot(roots, seen, root, "explicit root");
+  if (expanded || !roots.length) {
+    addEnvRoots(roots, seen);
+    addStandardArtifactRoots(roots, seen);
+  }
 
   const orchestratorId = u.searchParams.get("orchestrator") || u.searchParams.get("orchestratorId");
   const sessionId = u.searchParams.get("session") || u.searchParams.get("sessionId");
-  if (orchestratorId || sessionId) {
+  if ((orchestratorId || sessionId) && (sessionScoped || expanded || !roots.length)) {
     try {
       const resolved = await resolveDeepRunWorktrees({ orchestratorId, sessionId, worktree: null });
       for (const root of resolved) addRoot(roots, seen, root.path, root.label);
     } catch (_) {
       // Plane lookup is best-effort; local session paths above still work.
     }
+  }
+  if (sessionScoped || expanded) addSessionScopedRoots(roots, seen);
+  if (expanded) {
+    addNearbyProofWorktrees(roots, seen);
+    addGeneratedArtifactRoots(roots, seen);
   }
   return roots;
 }
@@ -406,13 +550,75 @@ function listFiles(rootDir, exts, maxDepth = 8, max = 500) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full, depth + 1);
       else if (entry.isFile() && exts.some((x) => entry.name.toLowerCase().endsWith(x))) {
-        out.push({ path: full, name: entry.name, rel: path.relative(rootDir, full) });
+        out.push({ path: full, name: entry.name, rel: path.relative(rootDir, full), mtime_ms: fileMtimeMs(full) });
       }
     }
   }
   walk(rootDir, 0);
   return out;
 }
+
+function registryCandidatePaths(roots) {
+  const out = [];
+  const add = (p) => { if (p && !out.includes(p)) out.push(p); };
+  add(process.env.WITSOC_ARTIFACT_REGISTRY);
+  for (const base of [
+    process.env.PLANE_SESSION_DIR,
+    process.env.OSCI_SESSION_DIR,
+    process.env.KIMI_WORK_DIR,
+    process.env.WITSOC_HARNESS_OUTPUT,
+    process.env.WITSOC_HARNESS_OUTPUT_DIR,
+    process.env.WITSOC_BENCHMARK_DIR,
+    process.env.WITSOC_BENCHMARK_OUTPUT,
+  ]) {
+    if (base) add(path.join(base, "witsoc_artifacts.json"));
+  }
+  for (const root of roots || []) {
+    add(path.join(root.path, "witsoc_artifacts.json"));
+    add(path.join(path.dirname(root.path), "witsoc_artifacts.json"));
+  }
+  return out;
+}
+
+function readArtifactRegistries(roots) {
+  const artifacts = [];
+  const registries = [];
+  const seen = new Set();
+  for (const registryPath of registryCandidatePaths(roots)) {
+    if (!registryPath || !fs.existsSync(registryPath)) continue;
+    let data = null;
+    try { data = JSON.parse(fs.readFileSync(registryPath, "utf8")); } catch (_) { continue; }
+    registries.push(registryPath);
+    for (const item of ((data && data.artifacts) || [])) {
+      if (!item || !item.path || seen.has(item.path) || !fs.existsSync(item.path)) continue;
+      seen.add(item.path);
+      const root = normalizeRoot(item.proof_worktree) || normalizeRoot(path.dirname(item.path));
+      artifacts.push({
+        path: item.path,
+        name: item.name || path.basename(item.path),
+        rel: root ? path.relative(root, item.path) : path.basename(item.path),
+        root: root || path.dirname(item.path),
+        root_label: item.owner_phase || "registered artifact",
+        mtime_ms: fileMtimeMs(item.path),
+        artifact: item,
+        registered: true,
+      });
+    }
+  }
+  return { artifacts, registries };
+}
+
+function mergeFiles(primary, secondary) {
+  const out = [];
+  const seen = new Set();
+  for (const f of primary.concat(secondary)) {
+    if (!f || !f.path || seen.has(f.path)) continue;
+    seen.add(f.path);
+    out.push(f);
+  }
+  return out;
+}
+
 async function resolveDeepRunWorktrees({ orchestratorId, sessionId, worktree }) {
   const roots = [];
   const seen = new Set();
@@ -478,33 +684,49 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (u.pathname === "/api/list") {
-    const roots = await rootsFromQuery(u);
-    if (!roots.length) return sendJson(res, 404, { error: "root_not_found" });
-    const files = [];
-    for (const root of roots) {
-      for (const f of listFiles(root.path, [".wit", ".lean"], 20, 1000)) {
-        files.push({ ...f, root: root.path, root_label: root.label });
+    try {
+      const roots = await rootsFromQuery(u);
+      if (!roots.length) return sendJson(res, 404, { error: "root_not_found" });
+      const registry = readArtifactRegistries(roots);
+      const scanned = [];
+      for (const root of roots) {
+        for (const f of listFiles(root.path, [".wit", ".lean", ".soc"], 20, 1500)) {
+          scanned.push({ ...f, root: root.path, root_label: root.label, registered: false });
+        }
       }
+      const files = mergeFiles(registry.artifacts, scanned);
+      files.sort((a, b) => (b.mtime_ms || 0) - (a.mtime_ms || 0) || String(a.rel || a.name).localeCompare(String(b.rel || b.name)));
+      const wits = files.filter((f) => f.name.toLowerCase().endsWith(".wit"));
+      const leans = files.filter((f) => f.name.toLowerCase().endsWith(".lean"));
+      const socs = files.filter((f) => f.name.toLowerCase().endsWith(".soc"));
+      return sendJson(res, 200, { roots, dir: roots[0].path, files, wit_files: wits, lean_files: leans, soc_files: socs, artifact_registries: registry.registries });
+    } catch (err) {
+      return sendJson(res, 500, { error: "list_failed", message: err && err.message ? err.message : String(err) });
     }
-    const wits = files.filter((f) => f.name.toLowerCase().endsWith(".wit"));
-    const leans = files.filter((f) => f.name.toLowerCase().endsWith(".lean"));
-    return sendJson(res, 200, { roots, dir: roots[0].path, files, wit_files: wits, lean_files: leans });
   }
 
   if (u.pathname === "/api/lean-files") {
     const roots = await rootsFromQuery(u);
     if (!roots.length) return sendJson(res, 404, { error: "root_not_found" });
     try {
-      const leanFiles = [];
+      const registry = readArtifactRegistries(roots);
+      const scanned = [];
       for (const root of roots) {
         for (const f of listFiles(root.path, [".lean"], 10, 1000)) {
-          leanFiles.push({ ...f, root: root.path, root_label: root.label });
+          scanned.push({ ...f, root: root.path, root_label: root.label, registered: false });
         }
       }
-      return sendJson(res, 200, { roots, lean_files: leanFiles });
+      const leanFiles = mergeFiles(registry.artifacts.filter((f) => f.name.toLowerCase().endsWith(".lean")), scanned);
+      return sendJson(res, 200, { roots, lean_files: leanFiles, artifact_registries: registry.registries });
     } catch (err) {
       return sendJson(res, 500, { error: "lean_files_failed", message: err.message });
     }
+  }
+
+  if (u.pathname === "/api/artifacts") {
+    const roots = await rootsFromQuery(u);
+    const registry = readArtifactRegistries(roots);
+    return sendJson(res, 200, { roots, artifact_registries: registry.registries, artifacts: registry.artifacts });
   }
 
   if (u.pathname === "/api/file") {
@@ -629,7 +851,12 @@ const server = http.createServer(async (req, res) => {
     if (!isRecognizedFile(p)) return sendJson(res, 400, { error: "recognized_file_required", path: p });
     try {
       const source = fs.readFileSync(p, "utf8");
-      const parsed = p.toLowerCase().endsWith(".lean") ? parseLeanText(source) : parseWitText(source);
+      const lower = p.toLowerCase();
+      const parsed = lower.endsWith(".lean")
+        ? parseLeanText(source)
+        : lower.endsWith(".soc")
+          ? parseSocText(source)
+          : parseWitText(source);
       return sendJson(res, 200, { path: p, parsed, receipt: readReceipt(p), receipt_path: p.toLowerCase().endsWith(".wit") ? receiptPath(p) : null });
     } catch (err) {
       return sendJson(res, 500, { error: "parse_failed", message: err.message });
@@ -663,6 +890,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   sendJson(res, 404, { error: "not_found", path: u.pathname });
+});
+
+server.on("error", (err) => {
+  process.stderr.write(`[witsoc] server error: ${err && err.message ? err.message : err}\n`);
+  process.exit(err && err.code === "EADDRINUSE" ? 98 : 1);
 });
 
 server.listen(PORT, "127.0.0.1", () => {

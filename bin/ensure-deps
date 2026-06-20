@@ -4,8 +4,9 @@
 # Creates `data/venv/` and installs the witsoc Python package into it.
 # Source resolution order:
 #   1. $WITSOC_SOURCE  (if it has a pyproject.toml)
-#   2. ~/Development/witsoc/witsoc/
-#   3. PyPI fallback (`pip install witsoc`)
+#   2. nearby workspace checkouts
+#   3. ~/Development/witsoc/witsoc/
+#   4. PyPI fallback (`pip install witsoc`)
 
 set -euo pipefail
 
@@ -31,6 +32,12 @@ is_witsoc_source() {
 SOURCE=""
 if [[ -n "${WITSOC_SOURCE:-}" ]] && is_witsoc_source "$WITSOC_SOURCE"; then
   SOURCE="$WITSOC_SOURCE"
+elif is_witsoc_source "$PLUGIN_DIR/../witsoc"; then
+  SOURCE="$PLUGIN_DIR/../witsoc"
+elif is_witsoc_source "$PLUGIN_DIR/../../witsoc"; then
+  SOURCE="$PLUGIN_DIR/../../witsoc"
+elif is_witsoc_source "${KIMI_WORK_DIR:-}/witsoc"; then
+  SOURCE="${KIMI_WORK_DIR:-}/witsoc"
 elif is_witsoc_source "$HOME/Development/witsoc/witsoc"; then
   SOURCE="$HOME/Development/witsoc/witsoc"
 fi
@@ -58,5 +65,13 @@ if [[ ! -x "$VENV_WIT" ]]; then
   exit 1
 fi
 
-VER=$("$VENV_DIR/bin/python" -c "import importlib.metadata as m; print(m.version('wit-lang'))" 2>/dev/null || echo "unknown")
+VER=$("$VENV_DIR/bin/python" -c "import importlib.metadata as m
+for name in ('wit-lang', 'witsoc'):
+    try:
+        print(m.version(name))
+        break
+    except Exception:
+        pass
+else:
+    print('unknown')" 2>/dev/null || echo "unknown")
 echo "[witsoc] venv ready: wit-lang $VER" >&2

@@ -1,14 +1,63 @@
 #!/usr/bin/env bash
-# List .wit and .lean files under a directory (default: $KIMI_WORK_DIR or $PWD).
+# List .wit, .lean, and .soc files under generated Witsoc roots.
 set -euo pipefail
 TARGET_DIR="${1:-${KIMI_WORK_DIR:-$PWD}}"
 [[ -d "$TARGET_DIR" ]] || { echo "[wit-list] not a directory: $TARGET_DIR" >&2; exit 2; }
-find "$TARGET_DIR" \
-  -maxdepth 8 \
-  -type f \
-  \( -name '*.wit' -o -name '*.lean' \) \
-  -not -path '*/node_modules/*' \
-  -not -path '*/.venv/*' \
-  -not -path '*/__pycache__/*' \
-  -not -path '*/.git/*' \
-  2>/dev/null
+declare -a SCAN_DIRS=("$TARGET_DIR")
+for candidate_dir in \
+  "${WITSOC_HARNESS_OUTPUT:-}" \
+  "${WITSOC_HARNESS_OUTPUT_DIR:-}" \
+  "${WITSOC_BENCHMARK_DIR:-}" \
+  "${WITSOC_BENCHMARK_OUTPUT:-}" \
+  "${PLANE_SESSION_DIR:-}/harness_output" \
+  "${KIMI_WORK_DIR:-}/harness_output" \
+  "$TARGET_DIR/harness_output" \
+  "${PLANE_SESSION_DIR:-}/runs" \
+  "${KIMI_WORK_DIR:-}/runs" \
+  "$TARGET_DIR/runs"; do
+  [[ -n "$candidate_dir" && -d "$candidate_dir" ]] && SCAN_DIRS+=("$candidate_dir")
+done
+while IFS= read -r artifact_dir; do
+  [[ -n "$artifact_dir" && -d "$artifact_dir" ]] && SCAN_DIRS+=("$artifact_dir")
+done < <(find "$TARGET_DIR" -maxdepth 5 -type d \( -name '*.benchmark' -o -path '*/.benchmark/artifacts' -o -path '*.benchmark/artifacts' \) 2>/dev/null)
+REGISTRY="${WITSOC_ARTIFACT_REGISTRY:-}"
+if [[ -z "$REGISTRY" ]]; then
+  for candidate in \
+    "${PLANE_SESSION_DIR:-}/witsoc_artifacts.json" \
+    "${OSCI_SESSION_DIR:-}/witsoc_artifacts.json" \
+    "${KIMI_WORK_DIR:-}/witsoc_artifacts.json" \
+    "${WITSOC_HARNESS_OUTPUT:-}/witsoc_artifacts.json" \
+    "${WITSOC_HARNESS_OUTPUT_DIR:-}/witsoc_artifacts.json" \
+    "${WITSOC_BENCHMARK_DIR:-}/witsoc_artifacts.json" \
+    "${WITSOC_BENCHMARK_OUTPUT:-}/witsoc_artifacts.json" \
+    "$TARGET_DIR/witsoc_artifacts.json"; do
+    if [[ -f "$candidate" ]]; then
+      REGISTRY="$candidate"
+      break
+    fi
+  done
+fi
+{
+if [[ -n "$REGISTRY" && -f "$REGISTRY" ]]; then
+  python3 - "$REGISTRY" <<'PY' 2>/dev/null || true
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text())
+for item in data.get("artifacts", []):
+    p = item.get("path")
+    if p and Path(p).exists() and Path(p).suffix.lower() in {".wit", ".lean", ".soc"}:
+        print(p)
+PY
+fi
+printf '%s\n' "${SCAN_DIRS[@]}" | awk '!seen[$0]++' | while IFS= read -r scan_dir; do
+  find "$scan_dir" \
+    -maxdepth 8 \
+    -type f \
+    \( -name '*.wit' -o -name '*.lean' -o -name '*.soc' \) \
+    -not -path '*/node_modules/*' \
+    -not -path '*/.venv/*' \
+    -not -path '*/__pycache__/*' \
+    -not -path '*/.git/*' \
+    2>/dev/null
+done
+} | awk '!seen[$0]++'
