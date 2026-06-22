@@ -1994,6 +1994,7 @@
       renderWitList();
       renderSocList();
       renderLeanList();
+      if (!CURRENT_WIT && WIT_FILES.length) await openWit(chooseWitFile());
       if (LEAN_PREVIEWING && !CURRENT_LEAN && LEAN_FILES.length) await openLean(chooseLeanFile());
     }
     function renderWitList() {
@@ -2018,6 +2019,20 @@
         select.appendChild(opt);
       }
       if (CURRENT_WIT && files.some((f) => f.path === CURRENT_WIT)) select.value = CURRENT_WIT;
+    }
+    function chooseWitFile() {
+      if (!WIT_FILES.length) return null;
+      const scored = WIT_FILES.map((f) => {
+        const rel = String(f.rel || f.name || "").toLowerCase();
+        const root = String(f.root || "");
+        let score = 0;
+        if (root === WORKTREE) score += 6;
+        if (/^proofs\//.test(rel) || /\/proofs\//.test(rel)) score += 5;
+        if (/\.wit$/.test(rel)) score += 2;
+        if (/draft|scratch|tmp|backup/.test(rel)) score -= 4;
+        return { f, score };
+      }).sort((a, b) => b.score - a.score || a.f.rel.localeCompare(b.f.rel));
+      return scored[0].f.path;
     }
     function renderSocList() {
       const el = document.getElementById("soc-files");
